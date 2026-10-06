@@ -13,7 +13,19 @@
  */
 #include "test.h"
 
+#if defined(_WIN32)
+#include "../extras/atree_lock_win32.h"
+#define rwlock_t struct atree_win32_lock
+#define rwlock_init atree_win32_lock_init
+#define rwlock_vtable atree_win32_lock_vtable
+#define rwlock_destroy atree_win32_lock_destroy
+#else
 #include "../extras/atree_lock_pthread.h"
+#define rwlock_t struct atree_pthread_lock
+#define rwlock_init atree_pthread_lock_init
+#define rwlock_vtable atree_pthread_lock_vtable
+#define rwlock_destroy atree_pthread_lock_destroy
+#endif
 #include "gen.h"
 #include "threads.h"
 
@@ -213,7 +225,7 @@ static void *writer_churn(void *arg)
 
 TEST(readers_and_writer_with_pthread_lock)
 {
-    struct atree_pthread_lock lk;
+    rwlock_t lk;
     atree_config_t cfg;
     struct shared sh;
     struct reader readers[NTHREADS];
@@ -221,9 +233,9 @@ TEST(readers_and_writer_with_pthread_lock)
     test_thread_t threads[NTHREADS];
     test_thread_t wthread;
     int i;
-    ASSERT_EQ_I64(atree_pthread_lock_init(&lk), 0);
+    ASSERT_EQ_I64(rwlock_init(&lk), 0);
     atree_config_init(&cfg);
-    cfg.lock = atree_pthread_lock_vtable(&lk);
+    cfg.lock = rwlock_vtable(&lk);
     ASSERT_FALSE(build_shared(&sh, &cfg, gen_seed_from_env(20260507)));
     wr.sh = &sh;
     wr.ops = 0;
@@ -248,7 +260,7 @@ TEST(readers_and_writer_with_pthread_lock)
     ASSERT_OK(atree_validate(sh.tree, NULL, 0));
     ASSERT_EQ_U64(atree_count(sh.tree), NEXPR);
     free_shared(&sh);
-    ASSERT_EQ_I64(atree_pthread_lock_destroy(&lk), 0);
+    ASSERT_EQ_I64(rwlock_destroy(&lk), 0);
     return 0;
 }
 

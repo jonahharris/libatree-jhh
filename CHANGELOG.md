@@ -4,7 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-06
+
+First release. Everything below was developed in milestones M0–M7.
+
+### Added (M7 — release)
+- `atree_to_graphviz` DOT export.
+- `extras/atree_lock_win32.h` (SRWLOCK adapter); the thread test uses it on
+  Windows.
+- Benchmarks: `bench_synthetic` (ABE-Gen-style, `--verify`, `--check`),
+  `bench_file`, the Rust crate's dataset converted under `bench/data/`,
+  `bench/baseline.json` and the `make bench-check` CI gate.
+- README with semantics, thread-safety, allocator and performance sections.
 
 ### Added (M6 — reorganize and self-adjust)
 - Alg. 2 reorganize: incoming operand sets are rewritten in terms of

@@ -1,10 +1,11 @@
 # libatree design notes
 
-This document describes what is implemented. `PLAN.md` describes what will
-be; as milestones land, their sections move here and are kept in sync with
-the code.
+This document describes the implementation module by module and records the
+design decisions behind it. `PLAN.md` is the plan the library was built from
+and keeps the paper-to-code mapping (§9.2) and the performance rationale
+(§9.3).
 
-## Module map (M0–M6)
+## Module map
 
 | Module | Purpose |
 |---|---|
@@ -30,7 +31,9 @@ the code.
 | `src/tree.c` | Lifecycle, attributes, stats, and index construction: `build()` recurses over the normalized expression, reorganizes each operand set against existing nodes (Alg. 2), reuses nodes found in the identity table or creates and links them (Alg. 1/4), then self-adjusts existing parents to reuse the new node (Alg. 3) with relevel and identity re-keying; subscriptions attach to the root node (`use_count` = parents + subscriptions); `cascade()` is the iterative Alg. 5 deletion; every change is journaled so a failed insert rolls back exactly; `atree_validate` checks every invariant. |
 | `src/index.[ch]` | Per-attribute phase-1 indexes: bool true/false lists, equality and membership hash buckets (a membership leaf sits in one bucket per element), sorted ray arrays for range comparisons probed as prefix/suffix, an `is null` list seeded only when the attribute is undefined, and a scan list for negated and list-containment forms. O(1) removal from lists via a per-node position array; buckets and rays are found by key. |
 | `src/search.c` | Report object (per-thread scratch: two bitsets, one queue per level, match list, counters) and Alg. 6 matching with zero suppression and propagation on demand; reset walks the level queues (dirty list) instead of clearing bitsets. Conveniences: callback delivery, exists, allow-list filtering. |
-| `extras/atree_lock_pthread.h` | Header-only `atree_lock_t` adapter over `pthread_rwlock_t`. |
+| `src/graphviz.c` | DOT export: one rank per level, leaves at the bottom, parent→child edges, access-child edges in bold, subscription ids as external labels, constant-true ids in a note. Predicate text is DSL-escaped for DOT. |
+| `extras/atree_lock_pthread.h`, `extras/atree_lock_win32.h` | Header-only `atree_lock_t` adapters over `pthread_rwlock_t` and `SRWLOCK`. |
+| `bench/bench_synthetic.c`, `bench/bench_file.c` | ABE-Gen-style synthetic workload (Zipf dimensions/values, operator mix, shared subexpressions, `--verify` brute-force check, `--check` baseline gate) and a file-driven benchmark; `bench/convert_rust_search_json.py` converts the Rust crate's dataset. |
 | `src/expr.[ch]` | Caller-facing expression trees: public builders (`atree_expr_*`), internal constructors for the parser, `atree__expr_normalize` (the zero suppression filter), structural hash/compare, string-literal resolution by lookup (read path) or interning (write path), the three-valued reference evaluator `atree_expr_eval`, and the DSL printer `atree_expr_print`. Each node owns its allocations through its own `struct atree__mem`. |
 
 ## Invariants established in M0
@@ -193,6 +196,20 @@ the single-threaded answer, then readers plus a churning writer through the
 pthread adapter (soundness of every returned id, structure validated by the
 writer), then a build-swap-retire sequence; `make check-tsan` runs it under
 ThreadSanitizer.
+
+## Benchmarks and the regression gate
+
+`make bench` builds `bench_synthetic` and `bench_file`. The synthetic
+generator follows the paper's ABE-Gen (§6.1): dimensions and values are
+drawn from Zipf distributions, operators from the 40/40/10/5/5
+and/or/not/xor/xnor mix, depth and fan-out are bounded, and subexpression
+strings are reused from per-depth pools so sharing resembles Figure 7.
+`--verify K` compares every search against brute-force evaluation of the
+first K expressions. `make bench-check` runs the quick preset and compares
+the deterministic counts (nodes, edges, bytes, matches, nodes visited,
+predicates evaluated) with `bench/baseline.json`, failing on a drift above
+5%. Latencies are printed but not gated: CI machines vary too much. Updating
+the baseline is a deliberate commit.
 
 ## Build and quality gates
 

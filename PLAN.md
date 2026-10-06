@@ -1144,12 +1144,14 @@ numbers to tune toward, informed by the paper's Table 4 (1.6 ms match over
 | Read scaling | 8 threads ≥ 7× single-thread search throughput |
 | Phase 1 cost with 10× irrelevant predicates added | unchanged within noise (gate in §6.7 uses counts, not time) |
 
-**Regression gates in CI** (`bench_synthetic --quick`, 100k expressions,
-compared against `bench/baseline.json` committed with each release): fail
-if `nodes_visited`, `predicates_evaluated`, `stats.nodes`, or
-`bytes_allocated` regress by more than 5%, or wall-clock match latency by
-more than 25% (loose, because CI machines vary). Updating the baseline is a
-deliberate commit with a justification.
+**Regression gates in CI** (`make bench-check`: `bench_synthetic --quick`,
+20k expressions, compared against `bench/baseline.json` committed with each
+release): fail if nodes, edges, `bytes_allocated`, total matches, total
+`nodes_visited` or total `predicates_evaluated` drift by more than 5%.
+Decided in M7: wall-clock latency is printed but **not** gated, because CI
+runners vary by far more than any meaningful threshold; latency regressions
+are caught by the work counters they would have to come from, or by hand.
+Updating the baseline is a deliberate commit with a justification.
 
 **Profiling plan (M7).** `perf`/Instruments on the synthetic workload;
 expected hot spots in order: phase-1 hash probes, `emit()` parent iteration,

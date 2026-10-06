@@ -1,0 +1,8 @@
+# name	type
+city	string
+country	string
+deals	string_list
+exchange_id	int
+genres	string_list
+private	bool
+segment_ids	int_list

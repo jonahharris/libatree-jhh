@@ -78,10 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make MODE=release bench
-      - name: regression gates (active once bench/baseline.json exists, M7)
-        run: |
-          if [ -x build/bench/bench_synthetic ] && [ -f bench/baseline.json ]; then
-            build/bench/bench_synthetic --quick --check bench/baseline.json
-          else
-            echo "no benchmark baseline yet"
-          fi
+      - name: regression gates (deterministic work counts vs bench/baseline.json)
+        run: make MODE=release bench-check
+      - name: file benchmark on the Rust crate's dataset
+        run: build/bench/bench_file bench/data/rust_search.defs bench/data/rust_search.exprs bench/data/rust_search.events --repeat 50

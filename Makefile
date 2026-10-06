@@ -69,7 +69,7 @@ FORMAT_FILES := $(wildcard include/*.h src/*.c src/*.h tests/*.c tests/*.h tests
                            bench/*.c bench/*.h fuzz/*.c extras/*.h)
 
 .PHONY: all static shared check check-asan check-ubsan check-tsan check-valgrind \
-        check-header check-fuzz-compile bench fuzz format format-check install clean help
+        check-header check-fuzz-compile bench bench-check fuzz format format-check install clean help
 
 all: static shared
 
@@ -159,10 +159,16 @@ check-fuzz-compile: $(STLIB)
 
 $(BUILD)/bench/%: bench/%.c $(STLIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) -std=c99 -O2 -g $(WARNINGS) -o $@ $< $(STLIB) $(LDFLAGS)
+	$(CC) $(CPPFLAGS) -std=c99 -O2 -g $(WARNINGS) -o $@ $< $(STLIB) $(LDFLAGS) -lm
 
 bench: $(BENCH_BINS)
-	@if [ -z "$(BENCH_SRCS)" ]; then echo "bench: nothing in bench/ yet"; fi
+	@echo "built: $(BENCH_BINS)"
+	@echo "run:   $(BUILD)/bench/bench_synthetic [--quick|--paper] [--json] [--check bench/baseline.json]"
+	@echo "       $(BUILD)/bench/bench_file bench/data/rust_search.defs bench/data/rust_search.exprs bench/data/rust_search.events --repeat 100"
+
+# Regression gate used by CI: deterministic work counts vs the committed baseline.
+bench-check: $(BUILD)/bench/bench_synthetic
+	$(BUILD)/bench/bench_synthetic --quick --verify 2000 --check bench/baseline.json
 
 $(BUILD)/fuzz/%: fuzz/%.c $(STLIB)
 	@mkdir -p $(dir $@)

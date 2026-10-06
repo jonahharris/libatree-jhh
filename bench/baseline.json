@@ -1,0 +1,9 @@
+{
+  "expressions": 20000, "events": 500, "dims": 1000, "cardinality": 100,
+  "event_size": 20, "depth": 3, "fanout": 4, "alpha": 0.600, "seed": 1, "flags": 0,
+  "nodes": 98231, "leaves": 62446, "edges": 118455, "max_level": 5,
+  "bytes_allocated": 21580246, "reorganized": 7665, "self_adjusted": 978,
+  "total_matches": 265287, "total_nodes_visited": 448190, "total_predicates_evaluated": 499290, "total_predicates_matched": 465079, "total_and_woken": 144247,
+  "insert_per_sec": 69039, "search_p50_us": 243.00, "search_p99_us": 452.00, "search_mean_us": 252.35, "delete_per_sec": 700011,
+  "verify_mismatches": 0
+}
