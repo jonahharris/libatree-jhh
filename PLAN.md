@@ -801,7 +801,10 @@ journal is undone in reverse. Alternative if simpler in practice: run
 `delete` cascade on the partially built root node, which releases exactly the
 nodes nobody else uses (this is what cep-atree does) — but this does not undo
 self-adjust rewrites, so the journal is preferred when self-adjust is on.
-Decide in milestone 4; tested with a failing allocator (§6.4).
+Decided in M4: the cascade approach, with the worklist reserved before any
+mutation so rollback itself cannot fail. Self-adjust rewrites (M6) must be
+journaled separately. Residue: string literals interned before the failure
+stay in the string table. Tested with a failing allocator (§6.4).
 
 ### 4.8 Per-attribute predicate indexes (index.c) — phase 1
 

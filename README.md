@@ -10,11 +10,12 @@ every expression it satisfies without evaluating each one. Typical uses:
 advertising exchanges, complex event processing, publish/subscribe filtering,
 alert routing.
 
-> **Status: pre-release, under construction.** M0 (scaffold), M1
-> (attributes, predicates, events, `atree_create`), M2 (expression builder,
-> normalization, reference evaluator, printer) and M3 (DSL parser) are
-> complete. The DAG itself (insert/search/delete) arrives in M4. See `PLAN.md` for the full
-> design and `CHANGELOG.md` for progress.
+> **Status: pre-release, under construction.** The library is functional:
+> M0–M4 are complete (scaffold, attributes/predicates/events, expression
+> builder and normalization, DSL parser, and the DAG with insert, delete and
+> search). Remaining before 0.1.0: M5 per-attribute predicate indexes for
+> phase 1, M6 reorganize and self-adjust (paper Alg. 2 and 3), M7 Graphviz
+> export, benchmarks and release polish. See `PLAN.md` and `CHANGELOG.md`.
 
 ## Design goals
 
@@ -50,7 +51,7 @@ Or with CMake (also for MSVC):
 cmake -B build && cmake --build build && ctest --test-dir build
 ```
 
-## Quick start (API preview; functional from M4)
+## Quick start
 
 ```c
 #include <atree.h>

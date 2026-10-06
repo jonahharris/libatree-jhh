@@ -93,9 +93,11 @@ $(SHLIB_LINK): $(SHLIB)
 
 # ---- tests ------------------------------------------------------------------
 
+TEST_LDFLAGS := -pthread
+
 $(BUILD)/tests/%: tests/%.c $(STLIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -MF $@.d -o $@ $< $(STLIB) $(LDFLAGS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MF $@.d -o $@ $< $(STLIB) $(LDFLAGS) $(TEST_LDFLAGS)
 
 check: $(TEST_BINS) check-header check-fuzz-compile
 	@status=0; for t in $(TEST_BINS); do \
@@ -130,7 +132,7 @@ check-ubsan:
 check-tsan:
 	@if [ -f tests/test_threads.c ]; then \
 	    $(MAKE) BUILD=$(BUILD)-tsan SAN="-fsanitize=thread" $(BUILD)-tsan/tests/test_threads && \
-	    $(BUILD)-tsan/tests/test_threads; \
+	    TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1" $(BUILD)-tsan/tests/test_threads; \
 	else echo "check-tsan: no tests/test_threads.c yet"; fi
 
 check-valgrind: $(TEST_BINS)

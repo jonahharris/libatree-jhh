@@ -108,8 +108,10 @@ assertion.
   Track live bytes in `atree_stats.bytes_allocated`.
 - Geometric growth only (`cap = cap ? cap * 2 : initial`), overflow-checked.
 - **Strong guarantee on failure:** `atree_insert*` either completes or leaves
-  the tree bit-for-bit equivalent to before (journal + rollback, see PLAN
-  §4.7). Every `ATREE_ERR_NOMEM` path is exercised by
+  the DAG, subscriptions and statistics exactly as before (rollback by
+  cascading over the nodes it created, see PLAN §4.7). The only permitted
+  residue is in the string table: literals interned before the failure stay
+  interned (strings are never freed anyway). Every `ATREE_ERR_NOMEM` path is exercised by
   `tests/test_alloc_failure.c`; after `atree_destroy`, live bytes must be 0.
 - Objects are reusable: events, reports, and their scratch buffers keep
   capacity across uses so steady-state matching allocates nothing.

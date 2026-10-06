@@ -4,7 +4,7 @@ This document describes what is implemented. `PLAN.md` describes what will
 be; as milestones land, their sections move here and are kept in sync with
 the code.
 
-## Module map (M0–M3)
+## Module map (M0–M4)
 
 | Module | Purpose |
 |---|---|
@@ -25,6 +25,11 @@ the code.
 | `src/tree.c` | `atree_create` (config validation and defaults, attribute and string tables), `atree_destroy`, attribute queries, `atree_stats` (M1 subset). |
 | `src/lexer.[ch]` | Pull-based, allocation-free tokenizer. Tokens carry byte offsets and lengths; string tokens record the quoted span and are unescaped by the parser into its scratch buffer. Integers are range-checked without `strtoll`; floats use `strtod` and must be finite. Also hosts `atree__error_set*`. |
 | `src/parser.c` | Recursive descent for the DSL (`atree_expr_parse`). One-token lookahead plus a lexer-state copy for the two-word keywords (`not in`, `one of`, `is not null`, ...). `and`/`or` chains become one n-ary node; `xor`/`xnor` are binary and left-associative; `between` lowers to two comparisons; `literal in list_attr` lowers to `one of`. Nesting (parentheses and `not`) is bounded by `max_depth` as a recursion guard. Every failure path records a status, offset and message once (`fail`), and later steps become no-ops. |
+| `src/node.[h]` | 64-byte `struct atree__node` (kind, flags, level, hash, use_count, access_child, children, parents, pred slot, index slot) with a static size assertion; node and predicate slabs; the probe type for identity lookups. |
+| `src/identity.[ch]` | Paper's expression-to-node table H_en: open-addressing set of node ids keyed by structural hash; lookups compare the full structure (operator + sorted child ids, or the predicate), so a hash collision can never merge two subexpressions. |
+| `src/tree.c` | Lifecycle, attributes, stats, and index construction: `build()` recurses over the normalized expression, reusing nodes found in the identity table and otherwise creating and linking them (Alg. 1/4); subscriptions attach to the root node (`use_count` = parents + subscriptions); `cascade()` is the iterative Alg. 5 deletion; a failed insert rolls back by cascading over the nodes it created; `atree_validate` checks every invariant. |
+| `src/search.c` | Report object (per-thread scratch: two bitsets, one queue per level, match list, counters) and Alg. 6 matching with zero suppression and propagation on demand; reset walks the level queues (dirty list) instead of clearing bitsets. Conveniences: callback delivery, exists, allow-list filtering. |
+| `extras/atree_lock_pthread.h` | Header-only `atree_lock_t` adapter over `pthread_rwlock_t`. |
 | `src/expr.[ch]` | Caller-facing expression trees: public builders (`atree_expr_*`), internal constructors for the parser, `atree__expr_normalize` (the zero suppression filter), structural hash/compare, string-literal resolution by lookup (read path) or interning (write path), the three-valued reference evaluator `atree_expr_eval`, and the DSL printer `atree_expr_print`. Each node owns its allocations through its own `struct atree__mem`. |
 
 ## Invariants established in M0
@@ -105,6 +110,49 @@ except through the expression constructors; its scratch (list buffers,
 unescaped strings) is balanced per call. The libFuzzer harness in
 `fuzz/fuzz_parser.c` is compiled and replayed over `fuzz/corpus/` by
 `make check` so it cannot rot.
+
+## The DAG (M4)
+
+**Identity.** A leaf's identity is its normalized predicate (string ids
+interned at insert); an inner node's identity is (operator, sorted unique
+child ids). Both are hashed and then compared structurally. Commutativity
+and associativity are therefore free: `a and b` and `b and a` are one node,
+and `(a and b) and c` is `AND(a, b, c)` after flattening.
+
+**Use counts and sharing.** `use_count` is the number of parent links plus
+attached subscription ids. Inserting an expression that already exists
+attaches the id to the existing root (paper Alg. 4 line 3). Deleting
+detaches the id and cascades over children whose count reaches zero
+(Alg. 5), iteratively, with a worklist reserved up front so deletion cannot
+fail once it starts mutating.
+
+**Rollback.** Insert reserves the cascade worklist first, then builds; on
+any failure (allocation, limit) it cascades over the nodes it created,
+newest first. Pre-existing nodes only ever return to their previous use
+counts, so they survive. The string table is the one thing a failed insert
+may leave behind: literals interned before the failure stay interned (they
+are never freed anyway); the DAG, subscriptions and statistics are exactly
+as before. `test_alloc_failure` fails every allocation point of a 12-insert
+script and checks shape, validity, search results and leak-freedom each
+time.
+
+**Matching.** Phase 1 (M4) evaluates every leaf and seeds the true ones at
+level 1. Phase 2 drains level queues bottom-up; an inner node is evaluated
+with bit lookups over its children (all at lower levels, hence final), a
+true node emits its subscriptions and enqueues its parents, and an AND
+parent is enqueued only by its access child. The access child is the child
+with the lowest wake rank (equality/membership < ranges < AND < OR < bool <
+negated forms), ties broken by lower level, fewer children, lower id, so
+the choice is deterministic for a given insertion sequence. Figure 6 of the
+paper is a test with exact visit counts; the two-valued inner evaluation is
+sound because NOT has been eliminated (PLAN §4.6).
+
+**Reader isolation.** Searches write only to the report. `test_threads`
+runs eight unlocked readers against one tree and compares every result with
+the single-threaded answer, then readers plus a churning writer through the
+pthread adapter (soundness of every returned id, structure validated by the
+writer), then a build-swap-retire sequence; `make check-tsan` runs it under
+ThreadSanitizer.
 
 ## Build and quality gates
 

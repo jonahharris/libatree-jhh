@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added (M4 — tree core)
+- `atree_insert`, `atree_insert_expr`, `atree_delete`, `atree_contains`,
+  `atree_count`: node sharing through a structural identity table, use
+  counts, iterative delete cascade, complete rollback on failed inserts.
+- `atree_report_*`, `atree_search`, `atree_search_cb`, `atree_exists`,
+  `atree_search_ids`: level-synchronous matching with zero suppression and
+  propagation on demand; per-report scratch with dirty-list reset so a
+  warmed-up search makes no allocator calls and never writes to the tree.
+- `atree_validate` (every structural invariant) and full `atree_stats`.
+- Optional injected reader/writer lock taken by every public call;
+  `extras/atree_lock_pthread.h` adapter.
+- Tests: `test_tree` (scenarios, paper Figures 4 and 6 with exact node and
+  visit counts, constants, conveniences), `test_differential` (tree vs
+  reference evaluator on random expressions/events under six flag
+  combinations with churn and validation), `test_alloc_failure` (every
+  allocation point), `test_threads` (unlocked readers, readers + writer
+  with the pthread lock, build-swap-retire; `make check-tsan`),
+  `test_perf` (zero suppression, propagation on demand, sharing,
+  allocation-free steady state gates).
+
 ### Added (M3 — DSL)
 - `atree_expr_parse`: hand-written lexer and recursive-descent parser for
   the full expression language (comparisons in both orientations, `in`/

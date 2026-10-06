@@ -19,11 +19,18 @@
 
 #include "alloc.h"
 #include "attr.h"
+#include "hash.h"
+#include "identity.h"
+#include "node.h"
 #include "strtab.h"
 
 #define ATREE_DEFAULT_MAX_DEPTH 64u
 #define ATREE_DEFAULT_MAX_ADJUST_CANDIDATES 4096u
 #define ATREE_DEFAULT_INITIAL_NODES 1024u
+
+/* Values in the subscription map that are not node ids. */
+#define ATREE_SUB_ALWAYS (UINT32_MAX - 1) /* constant-true expression  */
+#define ATREE_SUB_NEVER (UINT32_MAX - 2)  /* constant-false expression */
 
 struct atree {
     struct atree__mem mem;
@@ -35,7 +42,33 @@ struct atree {
     size_t initial_nodes;
     struct atree__attrs attrs;
     struct atree__strtab strings;
-    /* M4 adds: node slab, identity table, subscription map, indexes, stats. */
+
+    /* The DAG. */
+    struct atree__nodevec nodes;     /* slab; kind == ATREE_NODE_FREE for free slots */
+    struct atree__u32vec free_nodes; /* recycled slots                                */
+    struct atree__predvec preds;     /* predicate slab, referenced by leaves           */
+    struct atree__u32vec free_preds;
+    struct atree__idset identity;      /* paper's H_en                                   */
+    struct atree__u32vec leaves;       /* every leaf; phase 1 scans this when unindexed  */
+    struct atree__u32vec level_counts; /* nodes per level; [0] unused                   */
+    uint32_t max_level;
+
+    /* Subscriptions. */
+    struct atree__u64map subs;         /* atree_id_t -> node id / ATREE_SUB_*            */
+    struct atree__u64map node_subs;    /* node id -> index into sublists                  */
+    struct atree__sublistvec sublists; /* ids attached to a node                         */
+    struct atree__u32vec free_sublists;
+    struct atree__u64vec always; /* ids of constant-true subscriptions              */
+    uint64_t nsubs;
+
+    /* Writer-side scratch. */
+    struct atree__u32vec worklist;
+
+    /* Cumulative statistics. */
+    uint64_t edges;
+    uint64_t reorganized;
+    uint64_t self_adjusted;
+    uint64_t adjust_candidates_skipped;
 };
 
 static inline void atree__rdlock(const atree_t *t)
@@ -65,5 +98,8 @@ static inline void atree__wrunlock(atree_t *t)
         t->lock.wrunlock(t->lock.ctx);
     }
 }
+
+/* Subscription ids attached to a node, or NULL. */
+const struct atree__u64vec *atree__node_sublist(const atree_t *t, atree__nid id);
 
 #endif /* ATREE_INTERNAL_H */
