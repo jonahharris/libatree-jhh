@@ -402,7 +402,11 @@ atree_tri_t atree_expr_eval(const atree_expr_t *, const atree_event_t *);
 ```
 
 The builder allocates with the tree's allocator (hence the `const atree_t *`
-parameter), so caller code never mixes allocators.
+parameter), so caller code never mixes allocators. Because the parameter is
+const, string literals are **not** interned at build time: the expression
+keeps raw bytes and `atree_insert_expr` interns them (write path), while
+`atree_expr_eval` resolves them by lookup. This is what makes building and
+parsing expressions safe from reader threads.
 
 ### 2.6 Events
 

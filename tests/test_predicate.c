@@ -513,7 +513,7 @@ static int render(struct fixture *f, const struct atree__pred *p, struct sink *s
     s->len = 0;
     s->buf[0] = '\0';
     atree__writer_init(&w, sink_write, s);
-    atree__pred_print(p, &f->attrs, &f->strings, &w);
+    atree__pred_print(p, &f->attrs, atree__strtab_resolver, &f->strings, &w);
     return atree__writer_status(&w) == ATREE_OK ? 0 : 1;
 }
 

@@ -252,7 +252,9 @@ uint64_t atree__value_hash(const struct atree__value *v)
         break;
     case ATREE_V_STRING_LIST:
         h = atree__hash_combine(h, v->u.sl.len);
-        for (i = 0; i < v->u.sl.len; i++) {
+        /* An unresolved list (data == NULL) hashes by length only; its raw
+         * strings are hashed by the expression layer. */
+        for (i = 0; v->u.sl.data != NULL && i < v->u.sl.len; i++) {
             h = atree__hash_combine(h, v->u.sl.data[i]);
         }
         break;
@@ -283,9 +285,14 @@ bool atree__value_equal(const struct atree__value *a, const struct atree__value 
             (a->u.il.len == 0 ||
              memcmp(a->u.il.data, b->u.il.data, (size_t)a->u.il.len * sizeof(int64_t)) == 0);
     case ATREE_V_STRING_LIST:
-        return a->u.sl.len == b->u.sl.len &&
-            (a->u.sl.len == 0 ||
-             memcmp(a->u.sl.data, b->u.sl.data, (size_t)a->u.sl.len * sizeof(uint32_t)) == 0);
+        if (a->u.sl.len != b->u.sl.len) {
+            return false;
+        }
+        if (a->u.sl.data == NULL || b->u.sl.data == NULL) {
+            return a->u.sl.data == b->u.sl.data; /* both unresolved: caller compares strings */
+        }
+        return a->u.sl.len == 0 ||
+            memcmp(a->u.sl.data, b->u.sl.data, (size_t)a->u.sl.len * sizeof(uint32_t)) == 0;
     default:
         return false;
     }

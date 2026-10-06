@@ -4,7 +4,7 @@ This document describes what is implemented. `PLAN.md` describes what will
 be; as milestones land, their sections move here and are kept in sync with
 the code.
 
-## Module map (M0, M1)
+## Module map (M0, M1, M2)
 
 | Module | Purpose |
 |---|---|
@@ -23,6 +23,7 @@ the code.
 | `src/predicate.[ch]` | Leaves: `<attr, kind, op, operand>`. `atree__pred_check` applies the type table and normalizes operands; `negate` is an exact involution for every kind; `eval` is three-valued; hash/equal are structural; cost and wake rank feed node ordering (M4); `print` renders DSL. |
 | `src/event.[ch]` | Public event object: dense value array by attribute id, reusable per-attribute list buffers, strings interned by lookup (unknown → sentinel 0), lists sorted and deduplicated, NaN stored as undefined. Own allocator counters. |
 | `src/tree.c` | `atree_create` (config validation and defaults, attribute and string tables), `atree_destroy`, attribute queries, `atree_stats` (M1 subset). |
+| `src/expr.[ch]` | Caller-facing expression trees: public builders (`atree_expr_*`), internal constructors for the parser, `atree__expr_normalize` (the zero suppression filter), structural hash/compare, string-literal resolution by lookup (read path) or interning (write path), the three-valued reference evaluator `atree_expr_eval`, and the DSL printer `atree_expr_print`. Each node owns its allocations through its own `struct atree__mem`. |
 
 ## Invariants established in M0
 
@@ -56,6 +57,33 @@ the code.
 - **Reader isolation**: events have their own allocator counters, so building
   an event never writes tree memory (`test_event` asserts the tree's byte
   counters are unchanged by event use).
+
+## Expressions and normalization (M2)
+
+- **Deferred interning.** Builders and the parser take `const atree_t *`, so
+  string literals stay as raw bytes inside the expression (sorted bytewise,
+  unique). They are interned by `atree_insert_expr` (write path, M4) and
+  resolved by lookup for `atree_expr_eval` (read path). A literal the tree
+  has never seen is present in no event: equality with it is false,
+  membership tests skip it, `all of` cannot be satisfied when one is required.
+- **Normal form** (`atree__expr_normalize`): only PRED, AND and OR, plus a
+  TRUE/FALSE constant at the root. NOT is pushed into leaves through exact
+  predicate negation and De Morgan; XOR/XNOR expand to
+  `(a ∧ ¬b) ∨ (¬a ∧ b)` / `(a ∧ b) ∨ (¬a ∧ ¬b)`; same-kind children are
+  flattened; constants are folded (absorbing/neutral); children are sorted
+  by `atree__expr_cmp` (hash first, then structure) and deduplicated; a
+  single remaining child replaces its connective. Depth is bounded by
+  `max_depth` before normalization starts; normalization recursion follows
+  the input, so stack use is bounded too.
+- **Soundness.** These rewrites are identities of Kleene three-valued logic,
+  so normalization preserves the exact three-valued result, not only
+  "true vs not true". `test_expr` checks this on 400 random expressions × 40
+  random events (with undefined attributes, NaN floats, unknown strings) and
+  checks idempotence and normal-form structure. The XOR expansion duplicates
+  its operands, so nested XOR grows exponentially; the depth limit bounds it.
+- **Printing** parenthesizes connective children (`(a and b) or not (c or
+  d)`); `not` binds tightest and is printed without parentheses around a
+  predicate.
 
 ## Build and quality gates
 

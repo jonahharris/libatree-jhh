@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added (M2 — expressions)
+- Public expression builder: `atree_expr_var/cmp_int/cmp_float/eq_string/
+  in_ints/in_strings/list_ints/list_strings/null/true/false`, connectives
+  `and/or/not/xor/xnor`, `atree_expr_free`, `atree_expr_print`,
+  three-valued reference evaluator `atree_expr_eval`.
+- Normalization (`atree__expr_normalize`): NOT push-down with exact
+  predicate negation, De Morgan, XOR/XNOR expansion, flattening, constant
+  folding, canonical ordering, deduplication, single-child collapse, depth
+  limit (`ATREE_ERR_TOO_DEEP`).
+- String literals are kept as raw bytes in expressions and interned only at
+  insert time, so building and parsing expressions never writes to the tree.
+- `tests/gen.h`: deterministic random schema/expression/event generator
+  (seeded, `ATREE_TEST_SEED` override) for property and differential tests.
+- Tests: `test_expr` (builders, printing, normalization identities ported
+  from the Rust crate, depth limit, Table 2 semantics, unknown-literal
+  semantics, normalization-preserves-evaluation property, lookup/intern,
+  allocation failures at every point).
+
 ### Added (M1 — values, attributes, predicates, events)
 - `atree_create` / `atree_destroy` with config validation (allocator, lock,
   flags, limits) and the attribute table; `atree_attr_lookup/count/name/type`;

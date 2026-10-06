@@ -29,31 +29,22 @@ static bool op_is_equality(uint8_t op)
     return op == ATREE_OP_EQ || op == ATREE_OP_NE;
 }
 
-/* Sorts and deduplicates a list operand; rejects empty lists. */
-static atree_status_t normalize_list(struct atree__value *v)
+static uint32_t list_len(const struct atree__value *v)
 {
-    if (v->kind == ATREE_V_INT_LIST) {
-        if (v->u.il.len == 0) {
-            return ATREE_ERR_INVALID_LITERAL;
-        }
-        v->u.il.len = atree__sort_unique_i64(v->u.il.data, v->u.il.len);
-        return ATREE_OK;
-    }
-    if (v->kind == ATREE_V_STRING_LIST) {
-        if (v->u.sl.len == 0) {
-            return ATREE_ERR_INVALID_LITERAL;
-        }
-        v->u.sl.len = atree__sort_unique_u32(v->u.sl.data, v->u.sl.len);
-        return ATREE_OK;
-    }
-    return ATREE_ERR_TYPE_MISMATCH;
+    return v->kind == ATREE_V_INT_LIST ? v->u.il.len : v->u.sl.len;
 }
 
-atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree__pred *p)
+/* Type rules (PLAN §3). needs_promotion is set when an integer literal must
+ * be converted for a float attribute. Lists are only checked for non-emptiness
+ * here; sorting happens in atree__pred_check so unresolved string lists
+ * (data == NULL, len = count) can be type-checked before interning. */
+static atree_status_t typecheck(const struct atree__attrs *attrs, const struct atree__pred *p,
+                                bool *needs_promotion)
 {
     atree_type_t t;
-    struct atree__value *v = &p->operand;
+    const struct atree__value *v = &p->operand;
 
+    *needs_promotion = false;
     if (p->attr >= atree__attrs_count(attrs) || p->kind >= ATREE_PRED_KIND_COUNT) {
         return ATREE_ERR_INVALID_ARG;
     }
@@ -62,11 +53,7 @@ atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree_
     switch ((enum atree__pred_kind)p->kind) {
     case ATREE_PRED_VAR:
     case ATREE_PRED_NOT_VAR:
-        if (t != ATREE_TYPE_BOOL) {
-            return ATREE_ERR_TYPE_MISMATCH;
-        }
-        v->kind = ATREE_V_UNDEFINED;
-        return ATREE_OK;
+        return t == ATREE_TYPE_BOOL ? ATREE_OK : ATREE_ERR_TYPE_MISMATCH;
 
     case ATREE_PRED_CMP:
         if (!op_is_valid(p->op)) {
@@ -81,8 +68,8 @@ atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree_
                 if (!atree__int_to_double_exact(v->u.i, &d)) {
                     return ATREE_ERR_INVALID_LITERAL;
                 }
-                v->kind = ATREE_V_FLOAT;
-                v->u.f = d;
+                *needs_promotion = true;
+                return ATREE_OK;
             }
             if (v->kind != ATREE_V_FLOAT) {
                 return ATREE_ERR_TYPE_MISMATCH;
@@ -101,7 +88,7 @@ atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree_
     case ATREE_PRED_NOT_IN:
         if ((t == ATREE_TYPE_INT && v->kind == ATREE_V_INT_LIST) ||
             (t == ATREE_TYPE_STRING && v->kind == ATREE_V_STRING_LIST)) {
-            return normalize_list(v);
+            return list_len(v) > 0 ? ATREE_OK : ATREE_ERR_INVALID_LITERAL;
         }
         return ATREE_ERR_TYPE_MISMATCH;
 
@@ -111,30 +98,71 @@ atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree_
     case ATREE_PRED_NOT_ALL_OF:
         if ((t == ATREE_TYPE_INT_LIST && v->kind == ATREE_V_INT_LIST) ||
             (t == ATREE_TYPE_STRING_LIST && v->kind == ATREE_V_STRING_LIST)) {
-            return normalize_list(v);
+            return list_len(v) > 0 ? ATREE_OK : ATREE_ERR_INVALID_LITERAL;
         }
         return ATREE_ERR_TYPE_MISMATCH;
 
     case ATREE_PRED_IS_NULL:
     case ATREE_PRED_IS_NOT_NULL:
-        if (atree__type_is_list(t)) {
-            return ATREE_ERR_TYPE_MISMATCH;
-        }
-        v->kind = ATREE_V_UNDEFINED;
-        return ATREE_OK;
+        return atree__type_is_list(t) ? ATREE_ERR_TYPE_MISMATCH : ATREE_OK;
 
     case ATREE_PRED_IS_EMPTY:
     case ATREE_PRED_IS_NOT_EMPTY:
-        if (!atree__type_is_list(t)) {
-            return ATREE_ERR_TYPE_MISMATCH;
-        }
-        v->kind = ATREE_V_UNDEFINED;
-        return ATREE_OK;
+        return atree__type_is_list(t) ? ATREE_OK : ATREE_ERR_TYPE_MISMATCH;
 
     case ATREE_PRED_KIND_COUNT:
     default:
         return ATREE_ERR_INVALID_ARG;
     }
+}
+
+atree_status_t atree__pred_typecheck(const struct atree__attrs *attrs, const struct atree__pred *p)
+{
+    bool promote;
+    return typecheck(attrs, p, &promote);
+}
+
+atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree__pred *p)
+{
+    bool promote;
+    struct atree__value *v = &p->operand;
+    atree_status_t st = typecheck(attrs, p, &promote);
+    if (st != ATREE_OK) {
+        return st;
+    }
+    if (promote) {
+        double d = 0.0;
+        (void)atree__int_to_double_exact(v->u.i, &d); /* typecheck proved it exact */
+        v->kind = ATREE_V_FLOAT;
+        v->u.f = d;
+    }
+    switch ((enum atree__pred_kind)p->kind) {
+    case ATREE_PRED_VAR:
+    case ATREE_PRED_NOT_VAR:
+    case ATREE_PRED_IS_NULL:
+    case ATREE_PRED_IS_NOT_NULL:
+    case ATREE_PRED_IS_EMPTY:
+    case ATREE_PRED_IS_NOT_EMPTY:
+        v->kind = ATREE_V_UNDEFINED;
+        break;
+    case ATREE_PRED_IN:
+    case ATREE_PRED_NOT_IN:
+    case ATREE_PRED_ONE_OF:
+    case ATREE_PRED_NONE_OF:
+    case ATREE_PRED_ALL_OF:
+    case ATREE_PRED_NOT_ALL_OF:
+        if (v->kind == ATREE_V_INT_LIST) {
+            v->u.il.len = atree__sort_unique_i64(v->u.il.data, v->u.il.len);
+        } else if (v->u.sl.data != NULL) {
+            v->u.sl.len = atree__sort_unique_u32(v->u.sl.data, v->u.sl.len);
+        }
+        break;
+    case ATREE_PRED_CMP:
+    case ATREE_PRED_KIND_COUNT:
+    default:
+        break;
+    }
+    return ATREE_OK;
 }
 
 void atree__pred_negate(struct atree__pred *p)
@@ -229,11 +257,6 @@ static bool apply_op(uint8_t op, int cmp)
 static atree_tri_t tri(bool b)
 {
     return b ? ATREE_TRUE : ATREE_FALSE;
-}
-
-static uint32_t list_len(const struct atree__value *v)
-{
-    return v->kind == ATREE_V_INT_LIST ? v->u.il.len : v->u.sl.len;
 }
 
 atree_tri_t atree__pred_eval(const struct atree__pred *p, const struct atree__value *v)
@@ -422,7 +445,12 @@ void atree__pred_free(struct atree__mem *m, struct atree__pred *p)
 
 /* ---- printing ----------------------------------------------------------- */
 
-static void print_scalar(const struct atree__value *v, const struct atree__strtab *strings,
+const char *atree__strtab_resolver(const void *ctx, uint32_t ref, uint32_t *len)
+{
+    return atree__strtab_get((const struct atree__strtab *)ctx, ref, len);
+}
+
+static void print_scalar(const struct atree__value *v, atree__strfn str, const void *ctx,
                          struct atree__writer *w)
 {
     switch (v->kind) {
@@ -434,7 +462,7 @@ static void print_scalar(const struct atree__value *v, const struct atree__strta
         break;
     case ATREE_V_STRING: {
         uint32_t len = 0;
-        const char *s = atree__strtab_get(strings, v->u.s, &len);
+        const char *s = str(ctx, v->u.s, &len);
         atree__write_quoted(w, s != NULL ? s : "", s != NULL ? len : 0);
         break;
     }
@@ -443,7 +471,7 @@ static void print_scalar(const struct atree__value *v, const struct atree__strta
     }
 }
 
-static void print_list(const struct atree__value *v, const struct atree__strtab *strings,
+static void print_list(const struct atree__value *v, atree__strfn str, const void *ctx,
                        struct atree__writer *w)
 {
     uint32_t i;
@@ -458,7 +486,8 @@ static void print_list(const struct atree__value *v, const struct atree__strtab 
     } else if (v->kind == ATREE_V_STRING_LIST) {
         for (i = 0; i < v->u.sl.len; i++) {
             uint32_t len = 0;
-            const char *s = atree__strtab_get(strings, v->u.sl.data[i], &len);
+            uint32_t ref = v->u.sl.data != NULL ? v->u.sl.data[i] : i; /* unresolved: index */
+            const char *s = str(ctx, ref, &len);
             if (i > 0) {
                 atree__write(w, ", ", 2);
             }
@@ -489,7 +518,7 @@ static const char *op_text(uint8_t op)
 }
 
 void atree__pred_print(const struct atree__pred *p, const struct atree__attrs *attrs,
-                       const struct atree__strtab *strings, struct atree__writer *w)
+                       atree__strfn str, const void *ctx, struct atree__writer *w)
 {
     const struct atree__attr *a = atree__attrs_get(attrs, p->attr);
     const char *name = a->name;
@@ -508,13 +537,13 @@ void atree__pred_print(const struct atree__pred *p, const struct atree__attrs *a
         atree__write(w, " ", 1);
         atree__write_cstr(w, op_text(p->op));
         atree__write(w, " ", 1);
-        print_scalar(&p->operand, strings, w);
+        print_scalar(&p->operand, str, ctx, w);
         break;
     case ATREE_PRED_IN:
     case ATREE_PRED_NOT_IN:
         atree__write(w, name, name_len);
         atree__write_cstr(w, p->kind == ATREE_PRED_IN ? " in " : " not in ");
-        print_list(&p->operand, strings, w);
+        print_list(&p->operand, str, ctx, w);
         break;
     case ATREE_PRED_ONE_OF:
     case ATREE_PRED_NONE_OF:
@@ -524,13 +553,13 @@ void atree__pred_print(const struct atree__pred *p, const struct atree__attrs *a
                           p->kind == ATREE_PRED_ONE_OF        ? " one of "
                               : p->kind == ATREE_PRED_NONE_OF ? " none of "
                                                               : " all of ");
-        print_list(&p->operand, strings, w);
+        print_list(&p->operand, str, ctx, w);
         break;
     case ATREE_PRED_NOT_ALL_OF:
         atree__write_cstr(w, "not (");
         atree__write(w, name, name_len);
         atree__write_cstr(w, " all of ");
-        print_list(&p->operand, strings, w);
+        print_list(&p->operand, str, ctx, w);
         atree__write(w, ")", 1);
         break;
     case ATREE_PRED_IS_NULL:

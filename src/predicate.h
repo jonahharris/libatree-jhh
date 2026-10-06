@@ -51,12 +51,16 @@ struct atree__pred {
     struct atree__value operand; /* ATREE_V_UNDEFINED when the kind has none */
 };
 
-/* Validates the predicate against the attribute table and normalizes the
- * operand in place: sorts and deduplicates lists, promotes an integer
- * literal to double for a float attribute. Errors: ATREE_ERR_INVALID_ARG
- * (bad attribute id, bad kind/op), ATREE_ERR_TYPE_MISMATCH,
- * ATREE_ERR_INVALID_LITERAL (NaN/inf, non-representable promotion, empty
- * list). */
+/* Type rules only (PLAN §3), no mutation: attribute exists, kind/op valid,
+ * operand kind matches the attribute type (an integer literal is accepted
+ * for a float attribute when exactly representable), lists non-empty, floats
+ * finite. Works on unresolved string lists (data == NULL, len = count). */
+atree_status_t atree__pred_typecheck(const struct atree__attrs *attrs, const struct atree__pred *p);
+
+/* atree__pred_typecheck plus normalization in place: promotes an integer
+ * literal to double for a float attribute, sorts and deduplicates lists,
+ * clears the operand of kinds that have none. Errors: ATREE_ERR_INVALID_ARG,
+ * ATREE_ERR_TYPE_MISMATCH, ATREE_ERR_INVALID_LITERAL. */
 atree_status_t atree__pred_check(const struct atree__attrs *attrs, struct atree__pred *p);
 
 /* Replaces p by its exact logical negation. */
@@ -82,9 +86,17 @@ atree_status_t atree__pred_copy(struct atree__mem *m, struct atree__pred *dst,
                                 const struct atree__pred *src);
 void atree__pred_free(struct atree__mem *m, struct atree__pred *p);
 
+/* Resolves a string reference to bytes for printing: for resolved predicates
+ * ref is a string-table id; for unresolved ones (operand data == NULL) it is
+ * the index into the expression's literal array. NULL -> "". */
+typedef const char *(*atree__strfn)(const void *ctx, uint32_t ref, uint32_t *len);
+
+/* atree__strfn over a struct atree__strtab (ctx). */
+const char *atree__strtab_resolver(const void *ctx, uint32_t ref, uint32_t *len);
+
 /* Renders DSL text, e.g. `country in ["CA", "US"]`. NOT_ALL_OF renders as
  * `not (attr all of [...])`. */
 void atree__pred_print(const struct atree__pred *p, const struct atree__attrs *attrs,
-                       const struct atree__strtab *strings, struct atree__writer *w);
+                       atree__strfn str, const void *ctx, struct atree__writer *w);
 
 #endif /* ATREE_PREDICATE_H */
