@@ -13,6 +13,9 @@
  *     --verify K        brute-force check of the first K expressions
  *     --quick           CI preset: 20000 expressions, 500 events
  *     --paper           Table 3 defaults: 1000000 expressions, 3000 events
+ *     --cap N           max_adjust_candidates (reorganize/self-adjust scan bound)
+ *     --dump PREFIX     also write PREFIX.defs/.exprs/.events (bench_file format)
+ *     --rust-compatible dialect the Rust a-tree crate accepts (no xor/xnor/all of)
  *     --json            machine-readable output
  *     --check FILE      compare deterministic counts with a baseline JSON
  *                       (exit 1 on a regression of more than 5%)
@@ -149,6 +152,10 @@ struct params {
     uint32_t verify;
     int json;
     const char *check;
+    const char *dump;    /* write PREFIX.defs/.exprs/.events in bench_file format */
+    uint32_t cap;        /* max_adjust_candidates (0 = library default) */
+    int rust_compatible; /* avoid xor/xnor and `all of` (unsupported or different in the Rust crate)
+                          */
 };
 
 static atree_type_t dim_type(uint32_t d)
@@ -232,6 +239,9 @@ static void gen_predicate(struct gen *g, struct buf *b)
     case ATREE_TYPE_FLOAT:
     case ATREE_TYPE_STRING_LIST:
     default:
+        if (g->p->rust_compatible && roll >= 60 && roll < 80) {
+            roll = 10; /* the crate's `all of` has reversed semantics: use `one of` */
+        }
         buf_add(b, roll < 60 ? " one of [" : roll < 80 ? " all of [" : " none of [");
         k = 1 + below(3);
         for (i = 0; i < k; i++) {
@@ -286,6 +296,9 @@ static void gen_expr(struct gen *g, struct buf *b, uint32_t depth)
         return;
     }
     roll = below(100);
+    if (g->p->rust_compatible && roll >= 90) {
+        roll = roll < 95 ? 0 : 50; /* xor -> and, xnor -> or */
+    }
     if (roll < 40 || roll < 80) {
         const char *op = roll < 40 ? " and " : " or ";
         uint32_t n = 2 + below(g->p->fanout > 1 ? g->p->fanout - 1 : 1);
@@ -313,7 +326,27 @@ static void gen_expr(struct gen *g, struct buf *b, uint32_t depth)
 
 /* ---- events ------------------------------------------------------------- */
 
-static int fill_event(struct gen *g, atree_event_t *ev, atree_attr_id_t *dims, int64_t *ints)
+static const char *type_name(atree_type_t t)
+{
+    switch (t) {
+    case ATREE_TYPE_BOOL:
+        return "bool";
+    case ATREE_TYPE_INT:
+        return "int";
+    case ATREE_TYPE_FLOAT:
+        return "float";
+    case ATREE_TYPE_STRING:
+        return "string";
+    case ATREE_TYPE_INT_LIST:
+        return "int_list";
+    case ATREE_TYPE_STRING_LIST:
+    default:
+        return "string_list";
+    }
+}
+
+static int fill_event(struct gen *g, atree_event_t *ev, atree_attr_id_t *dims, int64_t *ints,
+                      FILE *dump)
 {
     uint32_t n = 0;
     uint32_t i;
@@ -363,6 +396,30 @@ static int fill_event(struct gen *g, atree_event_t *ev, atree_attr_id_t *dims, i
         if (st != ATREE_OK) {
             return 1;
         }
+        if (dump != NULL) {
+            fprintf(dump, "%sd%u=", i ? ";" : "", (unsigned)d);
+            switch (dim_type(d)) {
+            case ATREE_TYPE_INT:
+                fprintf(dump, "%u", (unsigned)v);
+                break;
+            case ATREE_TYPE_STRING:
+                fprintf(dump, "\"%s\"", s);
+                break;
+            case ATREE_TYPE_BOOL:
+                fprintf(dump, "%s", (v & 1) != 0 ? "true" : "false");
+                break;
+            case ATREE_TYPE_INT_LIST:
+            case ATREE_TYPE_FLOAT:
+            case ATREE_TYPE_STRING_LIST:
+            default:
+                fprintf(dump, "[%lld, %lld, %lld]", (long long)ints[0], (long long)ints[1],
+                        (long long)ints[2]);
+                break;
+            }
+        }
+    }
+    if (dump != NULL) {
+        fputc('\n', dump);
     }
     return 0;
 }
@@ -527,6 +584,9 @@ static int parse_args(int argc, char **argv, struct params *p)
     p->verify = 0;
     p->json = 0;
     p->check = NULL;
+    p->dump = NULL;
+    p->rust_compatible = 0;
+    p->cap = 0;
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
@@ -577,6 +637,14 @@ static int parse_args(int argc, char **argv, struct params *p)
         } else if (strcmp(a, "--check") == 0) {
             p->check = v;
             i++;
+        } else if (strcmp(a, "--dump") == 0) {
+            p->dump = v;
+            i++;
+        } else if (strcmp(a, "--rust-compatible") == 0) {
+            p->rust_compatible = 1;
+        } else if (strcmp(a, "--cap") == 0) {
+            p->cap = (uint32_t)strtoul(v, NULL, 10);
+            i++;
         } else {
             fprintf(stderr, "unknown option %s\n", a);
             return 1;
@@ -601,6 +669,8 @@ int main(int argc, char **argv)
     atree_report_t *rep = NULL;
     struct results r;
     struct buf b = {NULL, 0, 0};
+    FILE *dump_exprs = NULL;
+    FILE *dump_events = NULL;
     atree_expr_t **kept = NULL;
     uint64_t *lat;
     atree_attr_id_t *dims;
@@ -633,9 +703,31 @@ int main(int argc, char **argv)
     }
     atree_config_init(&cfg);
     cfg.flags = p.flags;
+    cfg.max_adjust_candidates = p.cap;
     if (atree_create(&cfg, defs, p.dims, &tree) != ATREE_OK) {
         fprintf(stderr, "atree_create failed\n");
         return 2;
+    }
+    if (p.dump != NULL) {
+        char path[1024];
+        FILE *fd;
+        snprintf(path, sizeof path, "%s.defs", p.dump);
+        fd = fopen(path, "w");
+        snprintf(path, sizeof path, "%s.exprs", p.dump);
+        dump_exprs = fopen(path, "w");
+        snprintf(path, sizeof path, "%s.events", p.dump);
+        dump_events = fopen(path, "w");
+        if (fd == NULL || dump_exprs == NULL || dump_events == NULL) {
+            fprintf(stderr, "cannot write dump files %s.*\n", p.dump);
+            return 2;
+        }
+        fprintf(fd, "# name\ttype\n");
+        for (i = 0; i < p.dims; i++) {
+            fprintf(fd, "%s\t%s\n", names[i], type_name(dim_type(i)));
+        }
+        fclose(fd);
+        fprintf(dump_exprs, "# id\texpression\n");
+        fprintf(dump_events, "# attr=value;attr=value\n");
     }
 
     /* generator */
@@ -672,6 +764,9 @@ int main(int argc, char **argv)
             b.p[0] = '\0';
         }
         gen_expr(&g, &b, 1);
+        if (dump_exprs != NULL) {
+            fprintf(dump_exprs, "%u\t%s\n", (unsigned)(i + 1), b.p);
+        }
         st = atree_expr_parse(tree, b.p, b.len, &e, &err);
         if (st != ATREE_OK) {
             fprintf(stderr, "generated expression failed to parse: %s\n  %s\n", err.message, b.p);
@@ -717,7 +812,7 @@ int main(int argc, char **argv)
     }
     for (i = 0; i < p.events; i++) {
         atree_report_stats_t rs;
-        if (fill_event(&g, ev, dims, ints) != 0) {
+        if (fill_event(&g, ev, dims, ints, dump_events) != 0) {
             return 2;
         }
         t0 = bench_now_ns();
@@ -796,6 +891,12 @@ int main(int argc, char **argv)
     }
 
     /* cleanup */
+    if (dump_exprs != NULL) {
+        fclose(dump_exprs);
+    }
+    if (dump_events != NULL) {
+        fclose(dump_events);
+    }
     if (kept != NULL) {
         for (i = 0; i < p.verify; i++) {
             atree_expr_free(kept[i]);

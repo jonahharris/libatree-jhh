@@ -170,6 +170,27 @@ direction). `test_perf` checks arrival-order independence: a thousand
 `p and q and x = i` followed by `p and q` reach the same 2002-edge structure
 as the reverse order, with `self_adjusted == 1000`.
 
+**Edges and hot leaves.** A popular predicate (`gender = female` in the
+paper's workload; `d0 = 0` in the synthetic one) can have tens of thousands
+of parents, which made two operations quadratic in its parent count until
+the 1M-expression benchmark exposed them: unlinking a parent from such a
+leaf (delete, rollback) scanned the parent list, and validation did the
+same for every parent link. The children array of an inner node therefore
+stores, next to each child id, the position of the node inside that child's
+parent list (`2*cap` uint32 per node, ids in `[0, len)`, positions in
+`[cap, cap+len)`); unlinking is a swap-remove plus one binary search to
+fix the moved parent's recorded position, O(log fan-out) and allocation
+free. Validation checks positions directly and verifies the index in one
+linear pass (`atree__index_check`). The same benchmark showed the
+reorganize and self-adjust candidate scans running to their cap on every
+node: self-adjust now scans only the child with the fewest parents (exact,
+since a superset parent is in every child's parent list), and reorganize
+scans operands in ascending parent-count order so each cover is found at
+its cheapest member. On 100k expressions this raised insert throughput from
+34k/s to 48k/s; `max_adjust_candidates` remains the knob (256 gives 74k/s
+for under 1% of the edge savings; the default 4096 keeps the paper's
+arrival-order independence for parents up to that count).
+
 **Journal.** Every insert records what it changed: created nodes, rewired
 parents (with their old child set, hash, level and access child) and level
 changes. Rollback walks it newest-first without allocating: rewired parents

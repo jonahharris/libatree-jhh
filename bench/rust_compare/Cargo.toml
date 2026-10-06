@@ -1,0 +1,14 @@
+[package]
+name = "atree_rust_compare"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Compares the Rust a-tree crate against libatree on identical input files
+# (bench_file format). Optional tooling: needs the reference crate checkout.
+[dependencies]
+a-tree = { path = "../../reference/a-tree" }
+
+[profile.release]
+opt-level = 3
+debug = false

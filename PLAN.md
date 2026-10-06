@@ -1125,7 +1125,7 @@ here with the reason):
 | Strings | interned at insert/event-build time; comparisons are integer compares; event strings unknown to the tree map to a sentinel without allocation |
 | Lists | sorted + unique once; `in` is a binary search or an inverted-index lookup; `one of` an inverted-index lookup; `all of`/`none of` a merge walk |
 | Insert | O(1) identity lookups; reorganize/self-adjust bounded by `max_adjust_candidates` with O(1) mark-array membership |
-| Delete | O(fanout) per freed node, swap-remove everywhere |
+| Delete | O(fanout · log fanout) per freed node: per-edge parent positions make each unlink a swap-remove plus one binary search; no scan of a hot leaf's parent list |
 | Memory | target ≤ 64 B/node + child/parent arrays + predicate slab; `bytes_allocated` reported; benchmark prints bytes per expression |
 
 **Targets** (single thread, release build, modern x86-64 laptop; measured

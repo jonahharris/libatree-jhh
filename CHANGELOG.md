@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Inner nodes record, per child, their position in the child's parent
+  list: unlinking (delete, rollback) is O(log fan-out) instead of linear in
+  the child's parent count; `atree_validate` checks positions directly and
+  verifies the predicate index in one linear pass. Found by the
+  1M-expression benchmark, where validation and deletion over popular
+  leaves did not finish.
+- Self-adjust scans only the child with the fewest parents (exact);
+  reorganize scans operands in ascending parent-count order. Insert
+  throughput on the 100k synthetic workload: 34k/s → 48k/s.
+- `bench_synthetic` gains `--dump`, `--rust-compatible` and `--cap`;
+  `bench/rust_compare` compares the Rust `a-tree` crate on identical files;
+  `docs/COMPARISON.md` records the results. Baseline regenerated for the
+  new edge layout.
+
 ## [0.1.0] - 2026-10-06
 
 First release. Everything below was developed in milestones M0–M7.

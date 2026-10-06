@@ -13,3 +13,4 @@ build-*/
 compile_commands.json
 .cache/
 reference/
+bench/rust_compare/target/

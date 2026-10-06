@@ -95,7 +95,11 @@ typedef atree_status_t (*atree__seed_fn)(void *ctx, atree__nid id);
 atree_status_t atree__index_probe(const struct atree *t, const struct atree_event *ev,
                                   atree__seed_fn seed, void *ctx, uint64_t *evaluated);
 
-/* True when the leaf is present exactly where its route says (validate). */
-bool atree__index_contains(const struct atree *t, atree__nid id);
+/* Linear consistency check (validate): every leaf appears exactly where its
+ * route says, nothing else appears anywhere, lists agree with list_pos, rays
+ * are sorted. Uses `scratch` for a per-node counter array. Returns
+ * ATREE_ERR_CORRUPT with a message, ATREE_ERR_NOMEM, or ATREE_OK. */
+atree_status_t atree__index_check(const struct atree *t, struct atree__mem *scratch, char *msg,
+                                  size_t cap);
 
 #endif /* ATREE_INDEX_H */

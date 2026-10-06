@@ -5,6 +5,7 @@
  */
 #include "index.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "atree_internal.h"
@@ -252,16 +253,6 @@ static void bucket_remove(struct atree *t, struct atree__u64map *map, uint64_t k
     }
 }
 
-static bool bucket_has(const struct atree *t, const struct atree__u64map *map, uint64_t key,
-                       atree__nid id)
-{
-    uint32_t slot;
-    if (!atree__u64map_get(map, key, &slot)) {
-        return false;
-    }
-    return atree__u32vec_find(&t->index.buckets.data[slot], id) != UINT32_MAX;
-}
-
 /* Every key a predicate's operand contributes to a map. */
 static uint32_t operand_keys(const struct atree__pred *p, uint32_t i, uint64_t *key)
 {
@@ -352,12 +343,6 @@ static void ray_remove(struct atree *t, struct atree__rayvec *v, atree_type_t ty
     if (pos < v->len && v->data[pos].id == r->id) {
         atree__rayvec_remove_at(v, pos);
     }
-}
-
-static bool ray_has(const struct atree__rayvec *v, atree_type_t ty, const struct atree__ray *r)
-{
-    uint32_t pos = ray_lower_bound(v, ty, r);
-    return pos < v->len && v->data[pos].id == r->id;
 }
 
 /* Positions delimiting thresholds equal to the event value: [lb, ub). */
@@ -516,57 +501,190 @@ void atree__index_remove(struct atree *t, atree__nid id)
     }
 }
 
-bool atree__index_contains(const struct atree *t, atree__nid id)
-{
-    const struct atree__pred *p = pred_of(t, id);
-    const struct atree__index_attr *ia = &t->index.attrs[p->attr];
-    atree_type_t ty = type_of(t, p->attr);
-    const struct atree__u32vec *list = NULL;
-    uint32_t i;
-    uint32_t n;
-    uint64_t key = 0;
-    struct atree__ray r;
+/* ---- validation --------------------------------------------------------- */
 
-    switch (atree__index_route(t, p)) {
-    case ATREE_ROUTE_BOOL_TRUE:
-        list = &ia->bool_true;
-        break;
-    case ATREE_ROUTE_BOOL_FALSE:
-        list = &ia->bool_false;
-        break;
-    case ATREE_ROUTE_NULL:
-        list = &ia->nulls;
-        break;
-    case ATREE_ROUTE_SCAN:
-        list = &ia->scan;
-        break;
-    case ATREE_ROUTE_EQ:
-        (void)operand_keys(p, 0, &key);
-        return bucket_has(t, &ia->eq, key, id);
-    case ATREE_ROUTE_MEMBER:
-        n = operand_keys(p, 0, &key);
-        for (i = 0; i < n; i++) {
-            (void)operand_keys(p, i, &key);
-            if (!bucket_has(t, &ia->member, key, id)) {
-                return false;
+struct check {
+    const struct atree *t;
+    uint32_t *count; /* occurrences per node id */
+    char *msg;
+    size_t cap;
+    int bad;
+};
+
+static void check_fail(struct check *c, const char *what, unsigned long a, unsigned long b)
+{
+    if (!c->bad && c->msg != NULL && c->cap > 0) {
+        (void)snprintf(c->msg, c->cap, "index: %s (%lu, %lu)", what, a, b);
+    }
+    c->bad = 1;
+}
+
+/* Every id in a single-route list must be a leaf of that route, at list_pos. */
+static void check_list(struct check *c, const struct atree__u32vec *list, enum atree__route want,
+                       atree_attr_id_t attr)
+{
+    uint32_t i;
+    for (i = 0; i < list->len && !c->bad; i++) {
+        atree__nid id = list->data[i];
+        if (id >= c->t->nodes.len || c->t->nodes.data[id].kind != ATREE_NODE_LEAF) {
+            check_fail(c, "non-leaf in index list", id, want);
+            return;
+        }
+        if (atree__index_route(c->t, pred_of(c->t, id)) != want ||
+            pred_of(c->t, id)->attr != attr) {
+            check_fail(c, "leaf in the wrong list", id, want);
+            return;
+        }
+        if (id >= c->t->index.list_pos.len || c->t->index.list_pos.data[id] != i) {
+            check_fail(c, "list position out of date", id, i);
+            return;
+        }
+        c->count[id]++;
+    }
+}
+
+static void check_buckets(struct check *c, const struct atree__u64map *map, enum atree__route want,
+                          atree_attr_id_t attr)
+{
+    uint32_t iter = 0;
+    uint64_t key;
+    uint32_t slot;
+    while (!c->bad && atree__u64map_next(map, &iter, &key, &slot)) {
+        const struct atree__u32vec *b;
+        uint32_t i;
+        if (slot >= c->t->index.buckets.len) {
+            check_fail(c, "bucket slot out of range", slot, 0);
+            return;
+        }
+        b = &c->t->index.buckets.data[slot];
+        if (b->len == 0) {
+            check_fail(c, "empty bucket left in map", slot, 0);
+            return;
+        }
+        for (i = 0; i < b->len; i++) {
+            atree__nid id = b->data[i];
+            const struct atree__pred *p;
+            uint32_t n;
+            uint32_t k;
+            bool has = false;
+            uint64_t kk = 0;
+            if (id >= c->t->nodes.len || c->t->nodes.data[id].kind != ATREE_NODE_LEAF) {
+                check_fail(c, "non-leaf in bucket", id, want);
+                return;
+            }
+            p = pred_of(c->t, id);
+            if (atree__index_route(c->t, p) != want || p->attr != attr) {
+                check_fail(c, "leaf in the wrong bucket map", id, want);
+                return;
+            }
+            n = operand_keys(p, 0, &kk);
+            for (k = 0; k < n && !has; k++) {
+                (void)operand_keys(p, k, &kk);
+                has = kk == key;
+            }
+            if (!has) {
+                check_fail(c, "leaf under a key its operand lacks", id, (unsigned long)key);
+                return;
+            }
+            c->count[id]++;
+        }
+    }
+}
+
+static void check_rays(struct check *c, const struct atree__rayvec *v, enum atree__route want,
+                       atree_attr_id_t attr, atree_type_t ty)
+{
+    uint32_t i;
+    for (i = 0; i < v->len && !c->bad; i++) {
+        atree__nid id = v->data[i].id;
+        const struct atree__pred *p;
+        struct atree__ray r;
+        if (id >= c->t->nodes.len || c->t->nodes.data[id].kind != ATREE_NODE_LEAF) {
+            check_fail(c, "non-leaf in ray array", id, want);
+            return;
+        }
+        p = pred_of(c->t, id);
+        if (atree__index_route(c->t, p) != want || p->attr != attr) {
+            check_fail(c, "leaf in the wrong ray array", id, want);
+            return;
+        }
+        r = ray_of(p, id);
+        if (ray_cmp(ty, &v->data[i], &r) != 0) {
+            check_fail(c, "ray does not match its predicate", id, 0);
+            return;
+        }
+        if (i > 0 && ray_cmp(ty, &v->data[i - 1], &v->data[i]) >= 0) {
+            check_fail(c, "ray array out of order", attr, i);
+            return;
+        }
+        c->count[id]++;
+    }
+}
+
+atree_status_t atree__index_check(const struct atree *t, struct atree__mem *scratch, char *msg,
+                                  size_t cap)
+{
+    struct check c;
+    uint32_t a;
+    uint32_t i;
+    uint64_t indexed = 0;
+    uint64_t scanned = 0;
+
+    c.t = t;
+    c.msg = msg;
+    c.cap = cap;
+    c.bad = 0;
+    c.count = NULL;
+    if (t->nodes.len > 0) {
+        c.count = atree__zalloc_array(scratch, t->nodes.len, sizeof *c.count);
+        if (c.count == NULL) {
+            return ATREE_ERR_NOMEM;
+        }
+    }
+    for (a = 0; a < t->index.nattrs && !c.bad; a++) {
+        const struct atree__index_attr *ia = &t->index.attrs[a];
+        atree_type_t ty = type_of(t, a);
+        check_list(&c, &ia->bool_true, ATREE_ROUTE_BOOL_TRUE, a);
+        check_list(&c, &ia->bool_false, ATREE_ROUTE_BOOL_FALSE, a);
+        check_list(&c, &ia->nulls, ATREE_ROUTE_NULL, a);
+        check_list(&c, &ia->scan, ATREE_ROUTE_SCAN, a);
+        check_buckets(&c, &ia->eq, ATREE_ROUTE_EQ, a);
+        check_buckets(&c, &ia->member, ATREE_ROUTE_MEMBER, a);
+        check_rays(&c, &ia->lower, ATREE_ROUTE_LOWER, a, ty);
+        check_rays(&c, &ia->upper, ATREE_ROUTE_UPPER, a, ty);
+    }
+    for (i = 0; i < t->nodes.len && !c.bad; i++) {
+        const struct atree__node *n = &t->nodes.data[i];
+        uint32_t want;
+        if (n->kind != ATREE_NODE_LEAF) {
+            if (c.count[i] != 0) {
+                check_fail(&c, "inner or free node present in an index", i, c.count[i]);
+            }
+            continue;
+        }
+        {
+            const struct atree__pred *p = pred_of(t, i);
+            enum atree__route route = atree__index_route(t, p);
+            uint64_t k = 0;
+            want = route == ATREE_ROUTE_MEMBER ? operand_keys(p, 0, &k) : 1;
+            if (route == ATREE_ROUTE_SCAN) {
+                scanned++;
+            } else {
+                indexed++;
             }
         }
-        return n > 0;
-    case ATREE_ROUTE_LOWER:
-        r = ray_of(p, id);
-        return ray_has(&ia->lower, ty, &r);
-    case ATREE_ROUTE_UPPER:
-        r = ray_of(p, id);
-        return ray_has(&ia->upper, ty, &r);
-    case ATREE_ROUTE_NONE:
-    default:
-        return false;
+        if (c.count[i] != want) {
+            check_fail(&c, "leaf occurrence count differs from its route", i, c.count[i]);
+        }
     }
-    if (id >= t->index.list_pos.len) {
-        return false;
+    if (!c.bad && (indexed != t->index.indexed || scanned != t->index.scanned)) {
+        check_fail(&c, "index counters out of date", (unsigned long)indexed,
+                   (unsigned long)scanned);
     }
-    i = t->index.list_pos.data[id];
-    return i < list->len && list->data[i] == id;
+    if (c.count != NULL) {
+        atree__free_array(scratch, c.count, t->nodes.len, sizeof *c.count);
+    }
+    return c.bad ? ATREE_ERR_CORRUPT : ATREE_OK;
 }
 
 /* ---- probing ------------------------------------------------------------ */
