@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added (M6 — reorganize and self-adjust)
+- Alg. 2 reorganize: incoming operand sets are rewritten in terms of
+  existing nodes by greedy set cover, bounded by `max_adjust_candidates`.
+- Alg. 3 self-adjust: existing parents whose operand set strictly contains
+  a new node's are rewired to reuse it, with identity re-keying, access
+  child re-choice and relevel. The index is now independent of arrival
+  order.
+- Journaled rollback covering rewires and level changes; identity table
+  re-insertion reuses tombstones so rollback never allocates.
+- `atree_stats.reorganized`, `self_adjusted`, `adjust_candidates_skipped`.
+- Tests: paper Figure 5 and the §4.2.3 self-adjust example with exact node,
+  edge and level counts (with and without the flags), Figure 6 now matches
+  the paper's optimized structure exactly, arrival-order gate, differential
+  suite over all 16 flag combinations.
+
 ### Added (M5 — predicate indexes)
 - Per-attribute phase-1 indexes (`src/index.[ch]`): bool lists, equality
   and membership buckets, sorted ray arrays for ranges, `is null` lists,

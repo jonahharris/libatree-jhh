@@ -66,6 +66,8 @@ struct atree {
 
     /* Writer-side scratch. */
     struct atree__u32vec worklist;
+    struct atree__u32vec mark; /* per node id: epoch stamp for set tests (reorganize/self-adjust) */
+    uint32_t mark_epoch;
 
     /* Cumulative statistics. */
     uint64_t edges;

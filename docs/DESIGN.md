@@ -4,7 +4,7 @@ This document describes what is implemented. `PLAN.md` describes what will
 be; as milestones land, their sections move here and are kept in sync with
 the code.
 
-## Module map (M0–M5)
+## Module map (M0–M6)
 
 | Module | Purpose |
 |---|---|
@@ -27,7 +27,7 @@ the code.
 | `src/parser.c` | Recursive descent for the DSL (`atree_expr_parse`). One-token lookahead plus a lexer-state copy for the two-word keywords (`not in`, `one of`, `is not null`, ...). `and`/`or` chains become one n-ary node; `xor`/`xnor` are binary and left-associative; `between` lowers to two comparisons; `literal in list_attr` lowers to `one of`. Nesting (parentheses and `not`) is bounded by `max_depth` as a recursion guard. Every failure path records a status, offset and message once (`fail`), and later steps become no-ops. |
 | `src/node.[h]` | 64-byte `struct atree__node` (kind, flags, level, hash, use_count, access_child, children, parents, pred slot, index slot) with a static size assertion; node and predicate slabs; the probe type for identity lookups. |
 | `src/identity.[ch]` | Paper's expression-to-node table H_en: open-addressing set of node ids keyed by structural hash; lookups compare the full structure (operator + sorted child ids, or the predicate), so a hash collision can never merge two subexpressions. |
-| `src/tree.c` | Lifecycle, attributes, stats, and index construction: `build()` recurses over the normalized expression, reusing nodes found in the identity table and otherwise creating and linking them (Alg. 1/4); subscriptions attach to the root node (`use_count` = parents + subscriptions); `cascade()` is the iterative Alg. 5 deletion; a failed insert rolls back by cascading over the nodes it created; `atree_validate` checks every invariant. |
+| `src/tree.c` | Lifecycle, attributes, stats, and index construction: `build()` recurses over the normalized expression, reorganizes each operand set against existing nodes (Alg. 2), reuses nodes found in the identity table or creates and links them (Alg. 1/4), then self-adjusts existing parents to reuse the new node (Alg. 3) with relevel and identity re-keying; subscriptions attach to the root node (`use_count` = parents + subscriptions); `cascade()` is the iterative Alg. 5 deletion; every change is journaled so a failed insert rolls back exactly; `atree_validate` checks every invariant. |
 | `src/index.[ch]` | Per-attribute phase-1 indexes: bool true/false lists, equality and membership hash buckets (a membership leaf sits in one bucket per element), sorted ray arrays for range comparisons probed as prefix/suffix, an `is null` list seeded only when the attribute is undefined, and a scan list for negated and list-containment forms. O(1) removal from lists via a per-node position array; buckets and rays are found by key. |
 | `src/search.c` | Report object (per-thread scratch: two bitsets, one queue per level, match list, counters) and Alg. 6 matching with zero suppression and propagation on demand; reset walks the level queues (dirty list) instead of clearing bitsets. Conveniences: callback delivery, exists, allow-list filtering. |
 | `extras/atree_lock_pthread.h` | Header-only `atree_lock_t` adapter over `pthread_rwlock_t`. |
@@ -147,6 +147,35 @@ negated forms), ties broken by lower level, fewer children, lower id, so
 the choice is deterministic for a given insertion sequence. Figure 6 of the
 paper is a test with exact visit counts; the two-valued inner evaluation is
 sound because NOT has been eliminated (PLAN §4.6).
+
+**Reorganize (M6, Alg. 2).** Before an inner node is looked up, its operand
+set U is rewritten greedily: among the parents of U's members with the same
+operator, pick the one whose children are all in U (largest first), replace
+those children by it, repeat. Membership tests use a per-node epoch mark
+array; the number of candidate parents examined per node is capped by
+`max_adjust_candidates` (default 4096; exceeding it is counted in
+`adjust_candidates_skipped` and only costs sharing). Sets of two operands
+are skipped because their only possible cover is the identity hit itself.
+
+**Self-adjust (M6, Alg. 3).** After a new node N is created, every parent P
+of one of N's children with the same operator and children ⊃ N.children is
+rewired to `(P.children \ N.children) ∪ {N}`, unless that set already exists
+as another node (uniqueness would be violated; the paper is silent, we
+skip). Rewiring re-keys P in the identity table, re-chooses P's access
+child, and relevels P and its ancestors (levels only grow in the forward
+direction). `test_perf` checks arrival-order independence: a thousand
+`p and q and x = i` followed by `p and q` reach the same 2002-edge structure
+as the reverse order, with `self_adjusted == 1000`.
+
+**Journal.** Every insert records what it changed: created nodes, rewired
+parents (with their old child set, hash, level and access child) and level
+changes. Rollback walks it newest-first without allocating: rewired parents
+re-enter the parent lists they left (whose spare slot is intact because all
+later pushes were undone first), identity entries return to the tombstone
+their removal left (the identity table probes before deciding to grow),
+and created nodes are released by cascade over a pre-reserved worklist.
+`test_alloc_failure` exercises every allocation point including the
+self-adjust paths.
 
 **Phase 1 with indexes (M5).** For each attribute: undefined → seed the
 `is null` list only; bool → one of two lists; scalar → equality bucket,

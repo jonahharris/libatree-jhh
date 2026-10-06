@@ -157,6 +157,85 @@ TEST(sharing)
     return 0;
 }
 
+/* Reorganize (Alg. 2): an existing AND(p,q) is reused by every later
+ * `p and q and x = i`, and self-adjust (Alg. 3) achieves the same structure
+ * when `p and q` arrives last: the index is independent of arrival order. */
+TEST(reorganize_and_self_adjust_sharing)
+{
+    atree_t *t = NULL;
+    atree_stats_t st;
+    char buf[96];
+    int i;
+
+    /* common subexpression first: reorganize reuses it */
+    ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    ASSERT_FALSE(ins(t, 1, "p and q"));
+    for (i = 0; i < 1000; i++) {
+        snprintf(buf, sizeof buf, "p and q and x = %d", i);
+        ASSERT_FALSE(ins(t, (atree_id_t)(10 + i), buf));
+    }
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.nodes, 2 + 1 + 1000 + 1000);
+    ASSERT_EQ_U64(st.edges, 2 + 2 * 1000); /* AND(AND(p,q), x_i) */
+    ASSERT_EQ_U64(st.reorganized, 1000);
+    ASSERT_EQ_U64(st.self_adjusted, 0);
+    ASSERT_EQ_U64(st.max_level, 3);
+    ASSERT_OK(atree_validate(t, NULL, 0));
+    atree_destroy(t);
+
+    /* common subexpression last: self-adjust rewires all thousand parents */
+    ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    for (i = 0; i < 1000; i++) {
+        snprintf(buf, sizeof buf, "p and q and x = %d", i);
+        ASSERT_FALSE(ins(t, (atree_id_t)(10 + i), buf));
+    }
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.edges, 3 * 1000);
+    ASSERT_FALSE(ins(t, 1, "p and q"));
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.nodes, 2 + 1 + 1000 + 1000);
+    ASSERT_EQ_U64(st.edges, 2 + 2 * 1000);
+    ASSERT_EQ_U64(st.self_adjusted, 1000);
+    ASSERT_EQ_U64(st.max_level, 3);
+    ASSERT_OK(atree_validate(t, NULL, 0));
+    {
+        /* and it still matches correctly */
+        atree_event_t *ev = NULL;
+        atree_report_t *rep = NULL;
+        ASSERT_OK(atree_event_create(t, &ev));
+        ASSERT_OK(atree_report_create(t, &rep));
+        ASSERT_OK(atree_event_set_bool(ev, "p", true));
+        ASSERT_OK(atree_event_set_bool(ev, "q", true));
+        ASSERT_OK(atree_event_set_int(ev, "x", 500));
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_EQ_U64(atree_report_count(rep), 2);
+        ASSERT_EQ_U64(atree_report_matches(rep)[0], 1);
+        ASSERT_EQ_U64(atree_report_matches(rep)[1], 510);
+        atree_report_destroy(rep);
+        atree_event_destroy(ev);
+    }
+    /* the candidate cap bounds the work and is reported */
+    {
+        atree_config_t cfg;
+        atree_t *small = NULL;
+        atree_config_init(&cfg);
+        cfg.max_adjust_candidates = 100;
+        ASSERT_OK(atree_create(&cfg, DEFS, NDEFS, &small));
+        for (i = 0; i < 300; i++) {
+            snprintf(buf, sizeof buf, "p and q and x = %d", i);
+            ASSERT_FALSE(ins(small, (atree_id_t)(10 + i), buf));
+        }
+        ASSERT_FALSE(ins(small, 1, "p and q"));
+        atree_stats(small, &st);
+        ASSERT_TRUE(st.self_adjusted > 0 && st.self_adjusted < 300);
+        ASSERT_TRUE(st.adjust_candidates_skipped > 0);
+        ASSERT_OK(atree_validate(small, NULL, 0));
+        atree_destroy(small);
+    }
+    atree_destroy(t);
+    return 0;
+}
+
 /* Steady state: after warm-up, searches make no allocator calls at all. */
 TEST(allocation_free_steady_state)
 {
@@ -269,5 +348,6 @@ RUN_TEST(index_independence);
 RUN_TEST(zero_suppression);
 RUN_TEST(propagation_on_demand);
 RUN_TEST(sharing);
+RUN_TEST(reorganize_and_self_adjust_sharing);
 RUN_TEST(allocation_free_steady_state);
 TEST_MAIN_END()

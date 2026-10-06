@@ -197,22 +197,23 @@ TEST(shared_subexpressions_and_use_counts)
     atree_stats(t, &st);
     ASSERT_EQ_U64(st.nodes, 0);
 
-    /* (a and b) or c shares nothing with (b and a) and d yet: normalization
-     * flattens the second into AND(a, b, d); M6's reorganize (Alg. 2) will
-     * rewrite it as AND(AND(a,b), d). Structure now: 4 leaves, AND(a,b),
-     * OR(AND, c), AND(a,b,d). */
+    /* (a and b) or c, then (b and a) and d: normalization flattens the second
+     * into AND(a, b, d), and reorganize (Alg. 2) rewrites it as
+     * AND(AND(a,b), d) because AND(a,b) exists. Structure: 4 leaves, AND(a,b),
+     * OR(AND, c), AND(AND(a,b), d). */
     ASSERT_FALSE(ins(t, 1, "(private and test) or exchange_id = 1"));
     ASSERT_FALSE(ins(t, 2, "(test and private) and price > 1.5"));
     atree_stats(t, &st);
     ASSERT_EQ_U64(st.leaves, 4);
     ASSERT_EQ_U64(st.nodes, 7);
-    ASSERT_EQ_U64(st.edges, 2 + 2 + 3);
+    ASSERT_EQ_U64(st.edges, 2 + 2 + 2);
     ASSERT_EQ_U64(st.max_level, 3);
+    ASSERT_EQ_U64(st.reorganized, 1);
     ASSERT_TRUE(valid(t));
-    /* Deleting 1 removes the OR, AND(a,b) and the exchange_id leaf. */
+    /* Deleting 1 removes the OR and the exchange_id leaf but keeps AND(a,b). */
     ASSERT_OK(atree_delete(t, 1));
     atree_stats(t, &st);
-    ASSERT_EQ_U64(st.nodes, 4);
+    ASSERT_EQ_U64(st.nodes, 5);
     ASSERT_EQ_U64(st.leaves, 3);
     ASSERT_TRUE(valid(t));
     ASSERT_OK(atree_delete(t, 2));
@@ -408,6 +409,13 @@ TEST(paper_figure_6)
     ASSERT_EQ_U64(st.leaves, 10); /* P1..P8, not P7, not P8 */
     ASSERT_EQ_U64(st.nodes, 18);
     ASSERT_EQ_U64(st.subscriptions, 6);
+    /* Figure 6(c): S3 is OR(OR(P1,P2,P3), P4) by reorganize (Alg. 2), and
+     * inserting S4 = AND(OR123, P4) self-adjusts S1 into AND(S4, OR56)
+     * (Alg. 3, the §4.2.3 example), so S1 moves to level 4. */
+    ASSERT_EQ_U64(st.reorganized, 1);
+    ASSERT_EQ_U64(st.self_adjusted, 1);
+    ASSERT_EQ_U64(st.edges, 17);
+    ASSERT_EQ_U64(st.max_level, 4);
     ASSERT_TRUE(valid(t));
 
     ASSERT_OK(atree_event_create(t, &ev));
@@ -421,10 +429,10 @@ TEST(paper_figure_6)
     ASSERT_EQ_U64(rs.predicates_matched, 3);   /* P1, not P7, not P8 */
     ASSERT_EQ_U64(rs.matches, 2);
     /* Zero suppression: only nodes reached from true leaves are visited:
-     * OR(1,2,3), OR(1,2,3,4) [S3], AND(not7,not8) [S6], and S4 = AND(OR(1,2,3),
-     * P4) whose access child is the OR. S1's access child is the smaller
-     * OR(5,6) (tie on rank and level, fewer children), so, as in the paper's
-     * Figure 6(c), OR(1,2,3) does not wake S1. */
+     * OR(1,2,3) [11], S3 = OR(11, P4) [15], AND(not7,not8) [S6], and
+     * S4 = AND(11, P4) whose access child is the OR. S1 = AND(S4, OR56) is
+     * guarded by S4 (AND ranks below OR), which is false, so S1 is not woken:
+     * exactly the paper's Figure 6(c) walk. */
     ASSERT_EQ_U64(rs.nodes_visited, 4);
     ASSERT_EQ_U64(rs.or_visited, 2);
     ASSERT_EQ_U64(rs.and_woken, 2);
@@ -442,6 +450,130 @@ TEST(paper_figure_6)
     atree_report_destroy(rep);
     atree_event_destroy(ev);
     atree_destroy(t);
+    return 0;
+}
+
+/* Paper Figure 5 / §4.2.2: with (P1 v P2 v P3) already indexed, inserting
+ * P1 v P2 v P3 v P4 is organized as ((P1 v P2 v P3) v P4), reusing the node
+ * (the third structure in the figure). Without reorganize it is a flat
+ * four-child OR. */
+TEST(paper_figure_5_reorganize)
+{
+    unsigned flags[2] = {0, ATREE_FLAG_NO_REORGANIZE};
+    size_t f;
+    for (f = 0; f < 2; f++) {
+        atree_config_t cfg;
+        atree_t *t = NULL;
+        atree_event_t *ev = NULL;
+        atree_report_t *rep = NULL;
+        atree_stats_t st;
+        atree_id_t both[] = {1, 2};
+        atree_config_init(&cfg);
+        cfg.flags = flags[f];
+        ASSERT_OK(atree_create(&cfg, PDEFS, 8, &t));
+        ASSERT_FALSE(ins(t, 1, "(p1 or p2 or p3) and p4"));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, 6);
+        ASSERT_EQ_U64(st.edges, 5);
+        ASSERT_FALSE(ins(t, 2, "p1 or p2 or p3 or p4"));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, 7);     /* one new OR either way */
+        ASSERT_EQ_U64(st.max_level, 3); /* the AND of id 1 is at level 3 either way */
+        if (flags[f] == 0) {
+            ASSERT_EQ_U64(st.edges, 5 + 2); /* OR(OR123, P4), itself at level 3 */
+            ASSERT_EQ_U64(st.reorganized, 1);
+        } else {
+            ASSERT_EQ_U64(st.edges, 5 + 4); /* OR(P1, P2, P3, P4) at level 2 */
+            ASSERT_EQ_U64(st.reorganized, 0);
+        }
+        ASSERT_TRUE(valid(t));
+        ASSERT_OK(atree_event_create(t, &ev));
+        ASSERT_OK(atree_report_create(t, &rep));
+        set_all_bools(ev, 8, false);
+        ASSERT_OK(atree_event_set_bool(ev, "p4", true));
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_TRUE(matches_are(rep, both + 1, 1));
+        ASSERT_OK(atree_event_set_bool(ev, "p2", true));
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_TRUE(matches_are(rep, both, 2));
+        /* deleting the reused subexpression's owner keeps it alive for 2 */
+        ASSERT_OK(atree_delete(t, 1));
+        ASSERT_TRUE(valid(t));
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_TRUE(matches_are(rep, both + 1, 1));
+        ASSERT_OK(atree_delete(t, 2));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, 0);
+        atree_report_destroy(rep);
+        atree_event_destroy(ev);
+        atree_destroy(t);
+    }
+    return 0;
+}
+
+/* Paper §4.2.3: with Figure 4 indexed, inserting (P1 v P2 v P3) ^ P4 creates
+ * a node N, and self-adjust rewires S1 = (P1 v P2 v P3) ^ P4 ^ (P5 v P6) into
+ * N ^ (P5 v P6). Without self-adjust, S1 keeps its three children. */
+TEST(paper_self_adjust)
+{
+    unsigned flags[2] = {0, ATREE_FLAG_NO_SELF_ADJUST};
+    size_t f;
+    for (f = 0; f < 2; f++) {
+        atree_config_t cfg;
+        atree_t *t = NULL;
+        atree_event_t *ev = NULL;
+        atree_report_t *rep = NULL;
+        atree_stats_t st;
+        atree_id_t all3[] = {1, 2, 3};
+        atree_id_t s3[] = {3};
+        atree_config_init(&cfg);
+        cfg.flags = flags[f];
+        ASSERT_OK(atree_create(&cfg, PDEFS, 8, &t));
+        ASSERT_FALSE(ins(t, 1, "(p1 or p2 or p3) and p4 and (p5 or p6)"));
+        ASSERT_FALSE(ins(t, 2, "(p5 or p6) and (p7 or p8)"));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, 13);
+        ASSERT_EQ_U64(st.edges, 12);
+        ASSERT_FALSE(ins(t, 3, "(p1 or p2 or p3) and p4"));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, 14);
+        if (flags[f] == 0) {
+            ASSERT_EQ_U64(st.edges, 12 + 2 - 1); /* N gains 2, S1 goes from 3 to 2 */
+            ASSERT_EQ_U64(st.max_level, 4);      /* S1 now sits above N */
+            ASSERT_EQ_U64(st.self_adjusted, 1);
+        } else {
+            ASSERT_EQ_U64(st.edges, 12 + 2);
+            ASSERT_EQ_U64(st.max_level, 3);
+            ASSERT_EQ_U64(st.self_adjusted, 0);
+        }
+        ASSERT_TRUE(valid(t));
+        ASSERT_OK(atree_event_create(t, &ev));
+        ASSERT_OK(atree_report_create(t, &rep));
+        set_all_bools(ev, 8, false);
+        ASSERT_OK(atree_event_set_bool(ev, "p1", true));
+        ASSERT_OK(atree_event_set_bool(ev, "p4", true));
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_TRUE(matches_are(rep, s3, 1));
+        ASSERT_OK(atree_event_set_bool(ev, "p6", true));
+        ASSERT_OK(atree_event_set_bool(ev, "p8", true));
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_TRUE(matches_are(rep, all3, 3));
+        /* deleting N's owner keeps N alive while S1 uses it */
+        ASSERT_OK(atree_delete(t, 3));
+        ASSERT_TRUE(valid(t));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, flags[f] == 0 ? 14 : 13);
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_TRUE(matches_are(rep, all3, 2));
+        ASSERT_OK(atree_delete(t, 1));
+        ASSERT_OK(atree_delete(t, 2));
+        atree_stats(t, &st);
+        ASSERT_EQ_U64(st.nodes, 0);
+        ASSERT_TRUE(valid(t));
+        atree_report_destroy(rep);
+        atree_event_destroy(ev);
+        atree_destroy(t);
+    }
     return 0;
 }
 
@@ -561,6 +693,8 @@ RUN_TEST(duplicate_ids_and_argument_errors);
 RUN_TEST(constant_expressions);
 RUN_TEST(paper_figure_4);
 RUN_TEST(paper_figure_6);
+RUN_TEST(paper_figure_5_reorganize);
+RUN_TEST(paper_self_adjust);
 RUN_TEST(conveniences);
 RUN_TEST(rust_crate_example);
 TEST_MAIN_END()

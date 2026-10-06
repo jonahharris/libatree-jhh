@@ -239,15 +239,11 @@ static int run_with_flags(unsigned flags, uint64_t seed)
 TEST(differential_all_flag_combinations)
 {
     uint64_t seed = gen_seed_from_env(20260406);
-    unsigned combos[] = {
-        0,
-        ATREE_FLAG_NO_PROPAGATION_ON_DEMAND,
-        ATREE_FLAG_NO_PREDICATE_INDEX,
-        ATREE_FLAG_NO_PREDICATE_INDEX | ATREE_FLAG_NO_PROPAGATION_ON_DEMAND,
-        ATREE_FLAG_NO_REORGANIZE | ATREE_FLAG_NO_SELF_ADJUST,
-        ATREE_FLAG_NO_REORGANIZE | ATREE_FLAG_NO_SELF_ADJUST | ATREE_FLAG_NO_PROPAGATION_ON_DEMAND |
-            ATREE_FLAG_NO_PREDICATE_INDEX,
-    };
+    unsigned combos[16];
+    size_t c;
+    for (c = 0; c < 16; c++) {
+        combos[c] = (unsigned)c; /* every subset of the four ATREE_FLAG_NO_* bits */
+    }
     size_t i;
     int failures = 0;
     for (i = 0; i < sizeof combos / sizeof combos[0]; i++) {

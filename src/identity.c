@@ -125,7 +125,27 @@ atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id
     struct atree__idset *s = &t->identity;
     uint32_t mask;
     uint32_t j;
-    if (s->cap == 0 || (uint64_t)(s->used + 1) * 10 >= (uint64_t)s->cap * 7) {
+
+    if (s->cap != 0) {
+        /* Probe first: landing on a tombstone needs no growth. This is what
+         * lets rollback re-insert a node under its old hash without
+         * allocating: the removal left a tombstone on that probe path. */
+        mask = s->cap - 1;
+        j = (uint32_t)hash & mask;
+        while (s->slots[j] != ATREE_NID_NONE && s->slots[j] != ATREE_IDSET_TOMB) {
+            j = (j + 1) & mask;
+        }
+        if (s->slots[j] == ATREE_IDSET_TOMB ||
+            (uint64_t)(s->used + 1) * 10 < (uint64_t)s->cap * 7) {
+            if (s->slots[j] == ATREE_NID_NONE) {
+                s->used++;
+            }
+            s->slots[j] = id;
+            s->count++;
+            return ATREE_OK;
+        }
+    }
+    {
         uint32_t cap = cap_for(s->count + 1);
         atree_status_t st;
         if (cap == 0) {
@@ -134,6 +154,12 @@ atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id
         if (cap < s->cap) {
             cap = s->cap;
         }
+        if (cap == s->cap) {
+            cap <<= 1; /* over the load factor on tombstones alone: grow anyway */
+            if (cap > IDSET_MAX_CAP) {
+                return ATREE_ERR_LIMIT;
+            }
+        }
         st = rehash(t, cap);
         if (st != ATREE_OK) {
             return st;
@@ -141,12 +167,10 @@ atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id
     }
     mask = s->cap - 1;
     j = (uint32_t)hash & mask;
-    while (s->slots[j] != ATREE_NID_NONE && s->slots[j] != ATREE_IDSET_TOMB) {
+    while (s->slots[j] != ATREE_NID_NONE) {
         j = (j + 1) & mask;
     }
-    if (s->slots[j] == ATREE_NID_NONE) {
-        s->used++;
-    }
+    s->used++;
     s->slots[j] = id;
     s->count++;
     return ATREE_OK;

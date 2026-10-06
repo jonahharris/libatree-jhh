@@ -87,6 +87,7 @@ static void free_dag(atree_t *t)
     atree__u32vec_free(&t->mem, &t->free_sublists);
     atree__u64vec_free(&t->mem, &t->always);
     atree__u32vec_free(&t->mem, &t->worklist);
+    atree__u32vec_free(&t->mem, &t->mark);
 }
 
 atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *attrs, size_t nattrs,
@@ -140,6 +141,8 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     atree__u32vec_init(&t->free_sublists);
     atree__u64vec_init(&t->always);
     atree__u32vec_init(&t->worklist);
+    atree__u32vec_init(&t->mark);
+    t->mark_epoch = 0;
     memset(&t->index, 0, sizeof t->index);
 
     st = atree__attrs_init(&t->mem, &t->attrs, attrs, nattrs);
@@ -466,6 +469,75 @@ static void cascade(atree_t *t, atree__nid start)
     }
 }
 
+/* ---- marks: per-node epoch stamps for O(1) set membership --------------- */
+
+static atree_status_t marks_begin(atree_t *t)
+{
+    uint32_t i;
+    while (t->mark.len < t->nodes.len) {
+        atree_status_t st = atree__u32vec_push(&t->mem, &t->mark, 0);
+        if (st != ATREE_OK) {
+            return st;
+        }
+    }
+    if (t->mark_epoch == UINT32_MAX) {
+        for (i = 0; i < t->mark.len; i++) {
+            t->mark.data[i] = 0;
+        }
+        t->mark_epoch = 0;
+    }
+    t->mark_epoch++;
+    return ATREE_OK;
+}
+
+static void mark_set(atree_t *t, const uint32_t *ids, uint32_t n)
+{
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        t->mark.data[ids[i]] = t->mark_epoch;
+    }
+}
+
+static bool marked(const atree_t *t, atree__nid id)
+{
+    return id < t->mark.len && t->mark.data[id] == t->mark_epoch;
+}
+
+/* ---- journal: everything an insert changes, for exact rollback ---------- */
+
+enum journal_kind {
+    J_CREATED, /* node created by this insert                           */
+    J_REWIRED, /* self-adjust rewired `node`; old child set kept        */
+    J_LEVEL    /* `node` changed level from old_level                    */
+};
+
+struct journal_entry {
+    uint8_t kind;
+    atree__nid node;
+    atree__nid added;                  /* J_REWIRED: the child that replaced old ones */
+    struct atree__u32vec old_children; /* J_REWIRED: owned until commit             */
+    uint64_t old_hash;
+    uint32_t old_level;
+    atree__nid old_access;
+};
+
+ATREE_VEC_DEFINE(journalvec, struct journal_entry);
+
+static atree_status_t journal_push(atree_t *t, struct journalvec *j, const struct journal_entry *e)
+{
+    return journalvec_push(&t->mem, j, *e);
+}
+
+static atree_status_t journal_created(atree_t *t, struct journalvec *j, atree__nid id)
+{
+    struct journal_entry e;
+    memset(&e, 0, sizeof e);
+    e.kind = J_CREATED;
+    e.node = id;
+    atree__u32vec_init(&e.old_children);
+    return journal_push(t, j, &e);
+}
+
 /* ---- index construction (Alg. 1/4) -------------------------------------- */
 
 /* Rank for choosing an AND node's access child (PLAN §4.4): the child most
@@ -513,6 +585,64 @@ static atree__nid choose_access_child(const atree_t *t, const uint32_t *ids, uin
     return best;
 }
 
+static void reset_access_child(atree_t *t, atree__nid id)
+{
+    struct atree__node *n = node_at(t, id);
+    if (n->kind == ATREE_NODE_AND && (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) == 0) {
+        n->access_child = choose_access_child(t, n->children.data, n->children.len);
+    } else {
+        n->access_child = ATREE_NID_NONE;
+    }
+}
+
+/* Recomputes levels upward from `start` after its children changed (both
+ * directions), journaling every change so rollback can restore them. */
+static atree_status_t relevel(atree_t *t, atree__nid start, struct journalvec *j)
+{
+    atree_status_t st = ATREE_OK;
+    t->worklist.len = 0;
+    st = atree__u32vec_push(&t->mem, &t->worklist, start);
+    while (st == ATREE_OK && t->worklist.len > 0) {
+        atree__nid id = t->worklist.data[--t->worklist.len];
+        struct atree__node *n = node_at(t, id);
+        uint32_t level = 0;
+        uint32_t i;
+        for (i = 0; i < n->children.len; i++) {
+            uint32_t cl = t->nodes.data[n->children.data[i]].level;
+            if (cl > level) {
+                level = cl;
+            }
+        }
+        level++;
+        if (level == n->level) {
+            continue;
+        }
+        {
+            struct journal_entry e;
+            memset(&e, 0, sizeof e);
+            e.kind = J_LEVEL;
+            e.node = id;
+            e.old_level = n->level;
+            atree__u32vec_init(&e.old_children);
+            st = journal_push(t, j, &e);
+            if (st != ATREE_OK) {
+                break;
+            }
+        }
+        st = level_inc(t, level);
+        if (st != ATREE_OK) {
+            break;
+        }
+        n = node_at(t, id);
+        level_dec(t, n->level);
+        n->level = level;
+        for (i = 0; st == ATREE_OK && i < n->parents.len; i++) {
+            st = atree__u32vec_push(&t->mem, &t->worklist, n->parents.data[i]);
+        }
+    }
+    return st;
+}
+
 /* Undo helper for a node whose construction failed part-way. */
 static void abort_new_node(atree_t *t, atree__nid id, uint32_t pred_slot, bool in_leaves,
                            bool in_index, bool in_identity, bool in_levels, uint32_t linked)
@@ -547,10 +677,10 @@ static void abort_new_node(atree_t *t, atree__nid id, uint32_t pred_slot, bool i
     node_release(t, id);
 }
 
-static atree_status_t build(atree_t *t, const atree_expr_t *e, struct atree__u32vec *created,
+static atree_status_t build(atree_t *t, const atree_expr_t *e, struct journalvec *j,
                             atree__nid *out);
 
-static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct atree__u32vec *created,
+static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct journalvec *j,
                                  atree__nid *out)
 {
     struct atree__pred p;
@@ -620,7 +750,7 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct atree
         abort_new_node(t, id, slot, true, indexed(t), true, false, 0);
         return st;
     }
-    st = atree__u32vec_push(&t->mem, created, id);
+    st = journal_created(t, j, id);
     if (st != ATREE_OK) {
         abort_new_node(t, id, slot, true, indexed(t), true, true, 0);
         return st;
@@ -629,7 +759,229 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct atree
     return ATREE_OK;
 }
 
-static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atree__u32vec *created,
+/* Alg. 2 (paper §4.2.2), greedy set cover: while some existing node of the
+ * same kind has all its children in the operand set, replace those children
+ * by it, largest cover first. Candidates are parents of the operands. The
+ * number of candidates examined is bounded by max_adjust_candidates. */
+static atree_status_t reorganize(atree_t *t, uint8_t kind, struct atree__u32vec *ids)
+{
+    bool changed = false;
+    size_t examined = 0;
+    atree_status_t st;
+
+    for (;;) {
+        atree__nid best = ATREE_NID_NONE;
+        uint32_t best_len = 0;
+        uint32_t i;
+        uint32_t j;
+        uint32_t m;
+
+        if (ids->len < 3) {
+            break; /* a cover of 2 operands is the whole set: identity finds it */
+        }
+        st = marks_begin(t);
+        if (st != ATREE_OK) {
+            return st;
+        }
+        mark_set(t, ids->data, ids->len);
+        for (i = 0; i < ids->len && examined < t->max_adjust_candidates; i++) {
+            const struct atree__node *u = &t->nodes.data[ids->data[i]];
+            for (j = 0; j < u->parents.len && examined < t->max_adjust_candidates; j++) {
+                atree__nid pid = u->parents.data[j];
+                const struct atree__node *p = &t->nodes.data[pid];
+                uint32_t k;
+                bool sub = true;
+                examined++;
+                if (p->kind != kind || p->children.len < 2 || p->children.len >= ids->len ||
+                    p->children.len <= best_len || marked(t, pid)) {
+                    continue;
+                }
+                for (k = 0; sub && k < p->children.len; k++) {
+                    sub = marked(t, p->children.data[k]);
+                }
+                if (sub) {
+                    best = pid;
+                    best_len = p->children.len;
+                }
+            }
+        }
+        if (examined >= t->max_adjust_candidates) {
+            t->adjust_candidates_skipped++;
+        }
+        if (best == ATREE_NID_NONE) {
+            break;
+        }
+        /* ids <- (ids \ children(best)) + {best}; children(best) are sorted. */
+        {
+            const struct atree__node *b = &t->nodes.data[best];
+            m = 0;
+            for (i = 0; i < ids->len; i++) {
+                if (!atree__bsearch_u32(b->children.data, b->children.len, ids->data[i])) {
+                    ids->data[m++] = ids->data[i];
+                }
+            }
+            ids->len = m;
+            st = atree__u32vec_push(&t->mem, ids, best);
+            if (st != ATREE_OK) {
+                return st;
+            }
+            ids->len = atree__sort_unique_u32(ids->data, ids->len);
+        }
+        changed = true;
+    }
+    if (changed) {
+        t->reorganized++;
+    }
+    return ATREE_OK;
+}
+
+/* Self-adjust step: parent P (same kind) has children strictly containing
+ * N's; rewrite P.children <- (P.children \ N.children) + {N}. Skipped when
+ * the rewritten set already exists as another node (uniqueness). Every
+ * change is journaled. */
+static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct journalvec *j)
+{
+    struct atree__node *p = node_at(t, pid);
+    const struct atree__node *n = &t->nodes.data[nid];
+    struct atree__u32vec nc;
+    struct atree__probe probe;
+    struct journal_entry e;
+    uint64_t new_hash;
+    uint64_t old_hash = p->hash;
+    uint32_t i;
+    atree_status_t st;
+
+    /* new child set */
+    atree__u32vec_init(&nc);
+    st = atree__u32vec_reserve(&t->mem, &nc, p->children.len - n->children.len + 1);
+    if (st != ATREE_OK) {
+        return st;
+    }
+    for (i = 0; i < p->children.len; i++) {
+        if (!atree__bsearch_u32(n->children.data, n->children.len, p->children.data[i])) {
+            nc.data[nc.len++] = p->children.data[i];
+        }
+    }
+    nc.data[nc.len++] = nid;
+    nc.len = atree__sort_unique_u32(nc.data, nc.len);
+    new_hash = inner_hash(p->kind, nc.data, nc.len);
+    probe.kind = p->kind;
+    probe.hash = new_hash;
+    probe.pred = NULL;
+    probe.children = nc.data;
+    probe.nchildren = nc.len;
+    if (atree__idset_find(t, &probe) != ATREE_NID_NONE) {
+        atree__u32vec_free(&t->mem, &nc); /* would duplicate an existing node */
+        return ATREE_OK;
+    }
+
+    /* journal first: old child set moves into the entry */
+    memset(&e, 0, sizeof e);
+    e.kind = J_REWIRED;
+    e.node = pid;
+    e.added = nid;
+    e.old_children = p->children;
+    e.old_hash = old_hash;
+    e.old_level = p->level;
+    e.old_access = p->access_child;
+    st = journal_push(t, j, &e);
+    if (st != ATREE_OK) {
+        atree__u32vec_free(&t->mem, &nc);
+        return st;
+    }
+    /* link P to N (may allocate) before any non-allocating unlink */
+    st = atree__u32vec_push(&t->mem, &node_at(t, nid)->parents, pid);
+    if (st != ATREE_OK) {
+        j->len--; /* entry not yet effective; P still owns its children */
+        atree__u32vec_free(&t->mem, &nc);
+        return st;
+    }
+    /* new identity entry before removing the old one (may allocate) */
+    if (new_hash != old_hash) {
+        st = atree__idset_insert(t, new_hash, pid);
+        if (st != ATREE_OK) {
+            struct atree__node *nn = node_at(t, nid);
+            uint32_t pos = atree__u32vec_find(&nn->parents, pid);
+            if (pos != UINT32_MAX) {
+                atree__u32vec_swap_remove(&nn->parents, pos);
+            }
+            j->len--;
+            atree__u32vec_free(&t->mem, &nc);
+            return st;
+        }
+    }
+    /* From here on nothing allocates until relevel; the journal entry is live. */
+    node_at(t, nid)->use_count++;
+    t->edges++;
+    p = node_at(t, pid);
+    for (i = 0; i < n->children.len; i++) {
+        struct atree__node *c = node_at(t, n->children.data[i]);
+        uint32_t pos = atree__u32vec_find(&c->parents, pid);
+        if (pos != UINT32_MAX) {
+            atree__u32vec_swap_remove(&c->parents, pos);
+        }
+        c->use_count--;
+        t->edges--;
+    }
+    p->children = nc;
+    p->hash = new_hash;
+    if (new_hash != old_hash) {
+        atree__idset_remove(t, old_hash, pid);
+    }
+    reset_access_child(t, pid);
+    t->self_adjusted++;
+    return relevel(t, pid, j);
+}
+
+/* Alg. 3 (paper §4.2.3): for every parent of one of N's children, with the
+ * same operator and a strict superset of N's children, rewire it to use N. */
+static atree_status_t self_adjust(atree_t *t, atree__nid nid, struct journalvec *j)
+{
+    size_t examined = 0;
+    uint32_t i;
+    atree_status_t st = ATREE_OK;
+    uint32_t nchildren = t->nodes.data[nid].children.len;
+
+    for (i = 0; st == ATREE_OK && i < nchildren; i++) {
+        atree__nid cid = t->nodes.data[nid].children.data[i];
+        uint32_t k = 0;
+        /* A rewired parent drops out of this child's parent list (its link
+         * moves to N), so iterate by index and re-read the list each time. */
+        while (st == ATREE_OK && k < t->nodes.data[cid].parents.len &&
+               examined < t->max_adjust_candidates) {
+            atree__nid pid = t->nodes.data[cid].parents.data[k];
+            const struct atree__node *p = &t->nodes.data[pid];
+            const struct atree__node *n = &t->nodes.data[nid];
+            bool super = true;
+            uint32_t m;
+            examined++;
+            if (pid == nid || p->kind != n->kind || p->children.len <= n->children.len) {
+                k++;
+                continue;
+            }
+            for (m = 0; super && m < n->children.len; m++) {
+                super = atree__bsearch_u32(p->children.data, p->children.len, n->children.data[m]);
+            }
+            if (!super) {
+                k++;
+                continue;
+            }
+            {
+                uint32_t before = t->nodes.data[cid].parents.len;
+                st = rewire(t, pid, nid, j);
+                if (t->nodes.data[cid].parents.len == before) {
+                    k++; /* skipped (duplicate) or failed: move on */
+                }
+            }
+        }
+        if (examined >= t->max_adjust_candidates) {
+            t->adjust_candidates_skipped++;
+        }
+    }
+    return st;
+}
+
+static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct journalvec *j,
                                   atree__nid *out)
 {
     struct atree__u32vec ids;
@@ -645,7 +997,7 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atre
     st = atree__u32vec_reserve(&t->mem, &ids, e->nchildren);
     for (i = 0; st == ATREE_OK && i < e->nchildren; i++) {
         atree__nid cid;
-        st = build(t, e->children[i], created, &cid);
+        st = build(t, e->children[i], j, &cid);
         if (st == ATREE_OK) {
             st = atree__u32vec_push(&t->mem, &ids, cid);
         }
@@ -659,6 +1011,18 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atre
         *out = ids.data[0];
         atree__u32vec_free(&t->mem, &ids);
         return ATREE_OK;
+    }
+    if ((t->flags & ATREE_FLAG_NO_REORGANIZE) == 0) {
+        st = reorganize(t, kind, &ids);
+        if (st != ATREE_OK) {
+            atree__u32vec_free(&t->mem, &ids);
+            return st;
+        }
+        if (ids.len == 1) {
+            *out = ids.data[0];
+            atree__u32vec_free(&t->mem, &ids);
+            return ATREE_OK;
+        }
     }
     probe.kind = kind;
     probe.hash = inner_hash(kind, ids.data, ids.len);
@@ -696,9 +1060,7 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atre
     }
     n = node_at(t, id);
     n->level = level + 1;
-    if (kind == ATREE_NODE_AND && (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) == 0) {
-        n->access_child = choose_access_child(t, n->children.data, n->children.len);
-    }
+    reset_access_child(t, id);
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
         abort_new_node(t, id, UINT32_MAX, false, false, false, false, n->children.len);
@@ -709,24 +1071,30 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atre
         abort_new_node(t, id, UINT32_MAX, false, false, true, false, node_at(t, id)->children.len);
         return st;
     }
-    st = atree__u32vec_push(&t->mem, created, id);
+    st = journal_created(t, j, id);
     if (st != ATREE_OK) {
         abort_new_node(t, id, UINT32_MAX, false, false, true, true, node_at(t, id)->children.len);
         return st;
+    }
+    if ((t->flags & ATREE_FLAG_NO_SELF_ADJUST) == 0) {
+        st = self_adjust(t, id, j); /* failures roll back through the journal */
+        if (st != ATREE_OK) {
+            return st;
+        }
     }
     *out = id;
     return ATREE_OK;
 }
 
-static atree_status_t build(atree_t *t, const atree_expr_t *e, struct atree__u32vec *created,
+static atree_status_t build(atree_t *t, const atree_expr_t *e, struct journalvec *j,
                             atree__nid *out)
 {
     switch ((enum atree__expr_kind)e->kind) {
     case ATREE_EXPR_PRED:
-        return build_leaf(t, e, created, out);
+        return build_leaf(t, e, j, out);
     case ATREE_EXPR_AND:
     case ATREE_EXPR_OR:
-        return build_inner(t, e, created, out);
+        return build_inner(t, e, j, out);
     case ATREE_EXPR_TRUE:
     case ATREE_EXPR_FALSE:
     case ATREE_EXPR_NOT:
@@ -737,18 +1105,92 @@ static atree_status_t build(atree_t *t, const atree_expr_t *e, struct atree__u32
     }
 }
 
-/* Nodes created by a failed insert are exactly those whose use count is
- * zero afterwards: cascade over them newest-first (parents before children). */
-static void rollback(atree_t *t, const struct atree__u32vec *created)
+static void recompute_max_level(atree_t *t)
 {
-    uint32_t i = created->len;
-    while (i > 0) {
-        atree__nid id = created->data[--i];
-        const struct atree__node *n = &t->nodes.data[id];
-        if (n->kind != ATREE_NODE_FREE && n->use_count == 0) {
-            cascade(t, id);
+    uint32_t l = t->level_counts.len;
+    t->max_level = 0;
+    while (l > 1) {
+        l--;
+        if (t->level_counts.data[l] != 0) {
+            t->max_level = l;
+            break;
         }
     }
+}
+
+/* Undoes the journal newest-first. Nothing here allocates: rewired parents
+ * re-enter the parent lists they left (whose capacity is intact because
+ * every later push has already been undone), identity entries return to
+ * their tombstones, and created nodes are released through cascade over a
+ * worklist reserved before the insert began. */
+static void rollback(atree_t *t, struct journalvec *j)
+{
+    uint32_t i = j->len;
+    while (i > 0) {
+        struct journal_entry *e = &j->data[--i];
+        switch (e->kind) {
+        case J_LEVEL: {
+            struct atree__node *n = node_at(t, e->node);
+            t->level_counts.data[n->level]--;
+            t->level_counts.data[e->old_level]++;
+            n->level = e->old_level;
+            break;
+        }
+        case J_REWIRED: {
+            struct atree__node *p = node_at(t, e->node);
+            struct atree__node *added = node_at(t, e->added);
+            uint32_t pos = atree__u32vec_find(&added->parents, e->node);
+            uint32_t k;
+            if (pos != UINT32_MAX) {
+                atree__u32vec_swap_remove(&added->parents, pos);
+            }
+            added->use_count--;
+            t->edges--;
+            for (k = 0; k < e->old_children.len; k++) {
+                atree__nid cid = e->old_children.data[k];
+                if (!atree__bsearch_u32(p->children.data, p->children.len, cid)) {
+                    struct atree__node *c = node_at(t, cid);
+                    (void)atree__u32vec_push(&t->mem, &c->parents,
+                                             e->node); /* slot vacated earlier */
+                    c->use_count++;
+                    t->edges++;
+                }
+            }
+            if (p->hash != e->old_hash) {
+                atree__idset_remove(t, p->hash, e->node);
+                (void)atree__idset_insert(t, e->old_hash, e->node); /* reuses the tombstone */
+            }
+            atree__u32vec_free(&t->mem, &p->children);
+            p->children = e->old_children;
+            atree__u32vec_init(&e->old_children);
+            p->hash = e->old_hash;
+            p->access_child = e->old_access;
+            t->self_adjusted--;
+            break;
+        }
+        case J_CREATED:
+        default: {
+            const struct atree__node *n = &t->nodes.data[e->node];
+            if (n->kind != ATREE_NODE_FREE && n->use_count == 0) {
+                cascade(t, e->node);
+            }
+            break;
+        }
+        }
+    }
+    recompute_max_level(t);
+}
+
+/* Releases what the journal still owns after a successful insert. */
+static void journal_commit(atree_t *t, struct journalvec *j)
+{
+    uint32_t i;
+    for (i = 0; i < j->len; i++) {
+        if (j->data[i].kind == J_REWIRED) {
+            atree__u32vec_free(&t->mem, &j->data[i].old_children);
+        }
+    }
+    journalvec_free(&t->mem, j);
 }
 
 static uint32_t expr_node_count(const atree_expr_t *e)
@@ -817,13 +1259,13 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
             }
         }
     } else {
-        struct atree__u32vec created;
+        struct journalvec journal;
         atree__nid root = ATREE_NID_NONE;
-        atree__u32vec_init(&created);
+        journalvec_init(&journal);
         /* Rollback must not fail: size the cascade worklist up front. */
         st = atree__u32vec_reserve(&t->mem, &t->worklist, t->nodes.len + expr_node_count(norm) + 1);
         if (st == ATREE_OK) {
-            st = build(t, norm, &created, &root);
+            st = build(t, norm, &journal, &root);
         }
         if (st == ATREE_OK) {
             st = sub_attach(t, root, id);
@@ -835,9 +1277,9 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
             }
         }
         if (st != ATREE_OK) {
-            rollback(t, &created);
+            rollback(t, &journal);
         }
-        atree__u32vec_free(&t->mem, &created);
+        journal_commit(t, &journal);
     }
     if (st == ATREE_OK) {
         t->nsubs++;

@@ -11,11 +11,10 @@ advertising exchanges, complex event processing, publish/subscribe filtering,
 alert routing.
 
 > **Status: pre-release, under construction.** The library is functional:
-> M0–M5 are complete (scaffold, attributes/predicates/events, expression
-> builder and normalization, DSL parser, the DAG with insert, delete and
-> search, and per-attribute predicate indexes). Remaining before 0.1.0: M6
-> reorganize and self-adjust (paper Alg. 2 and 3), M7 Graphviz export,
-> benchmarks and release polish. See `PLAN.md` and `CHANGELOG.md`.
+> M0–M6 are complete: every algorithm in the paper is implemented
+> (node sharing, reorganize, self-adjust, use-count deletion, zero
+> suppression, propagation on demand) plus per-attribute predicate indexes.
+> Remaining before 0.1.0: M7 Graphviz export, benchmarks and release polish. See `PLAN.md` and `CHANGELOG.md`.
 
 ## Design goals
 
