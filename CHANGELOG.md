@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added (M3 — DSL)
+- `atree_expr_parse`: hand-written lexer and recursive-descent parser for
+  the full expression language (comparisons in both orientations, `in`/
+  `not in`, `one of`/`none of`/`all of`, `is [not] null`, `is [not] empty`,
+  `and`/`or`/`not`/`xor`/`xnor` with C-like precedence, `between`,
+  `true`/`false`, `literal in list_attr`, `&&`/`||`/`!`/`!=`/`==`), with
+  case-insensitive keywords and diagnostics carrying byte offsets.
+- `fuzz/fuzz_parser.c` libFuzzer harness plus a seed corpus; `make check`
+  compiles it with a replay `main()` and runs the corpus.
+- Tests: `test_parser` (lexer tokens and errors, Rust parser tests ported,
+  precedence, about fifty error cases with offsets, print/parse round trip
+  over 500 random expressions, allocation failures at every point).
+
 ### Added (M2 — expressions)
 - Public expression builder: `atree_expr_var/cmp_int/cmp_float/eq_string/
   in_ints/in_strings/list_ints/list_strings/null/true/false`, connectives

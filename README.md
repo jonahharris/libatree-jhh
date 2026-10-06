@@ -11,9 +11,9 @@ advertising exchanges, complex event processing, publish/subscribe filtering,
 alert routing.
 
 > **Status: pre-release, under construction.** M0 (scaffold), M1
-> (attributes, predicates, events, `atree_create`) and M2 (expression
-> builder, normalization, reference evaluator, printer) are complete. The
-> DSL parser is M3; the DAG itself (insert/search/delete) arrives in M4. See `PLAN.md` for the full
+> (attributes, predicates, events, `atree_create`), M2 (expression builder,
+> normalization, reference evaluator, printer) and M3 (DSL parser) are
+> complete. The DAG itself (insert/search/delete) arrives in M4. See `PLAN.md` for the full
 > design and `CHANGELOG.md` for progress.
 
 ## Design goals
@@ -84,8 +84,32 @@ atree_report_destroy(rep); atree_event_destroy(ev); atree_destroy(tree);
 
 ## Expression language
 
-Documented in `PLAN.md` §3 until M3 lands; it is compatible with the Rust
-`a-tree` crate's DSL and adds `xor`, `xnor`, `between`, `true`/`false`.
+Compatible with the Rust `a-tree` crate's DSL, with `xor`, `xnor`,
+`between`, `true`/`false`, `value in list_attr` and the `&&`/`||`/`!`
+spellings added. Keywords are case-insensitive; attribute names are not.
+
+| Form | Attribute types |
+|---|---|
+| `attr` (bare) | bool |
+| `attr < <= > >= n`, `n op attr` | int, float (integer literals promote) |
+| `attr = <> literal`, `literal op attr` | int, float, string |
+| `attr in [..]`, `attr not in (..)` | int, string (list of the same type) |
+| `attr one of / none of / all of [..]` | int list, string list |
+| `attr is null`, `attr is not null` | scalars |
+| `attr is empty`, `attr is not empty` | lists |
+| `attr between lo and hi` | int, float |
+| `literal in list_attr` | shorthand for `list_attr one of [literal]` |
+| `true`, `false` | constants |
+
+Connectives, tightest first: `not`/`!`, `and`/`&&`, `xor`/`xnor`, `or`/`||`.
+Strings use single or double quotes with backslash escapes. Lists use `[]`
+or `()`. Errors report a byte offset and a message:
+
+```c
+atree_expr_t *e; atree_error_t err;
+if (atree_expr_parse(tree, "country in ['CA', 'US'] and price between 1 and 2.5", SIZE_MAX, &e, &err) != ATREE_OK)
+    fprintf(stderr, "offset %zu: %s\n", err.offset, err.message);
+```
 
 ## License
 

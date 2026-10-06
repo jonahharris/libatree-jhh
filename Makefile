@@ -69,7 +69,7 @@ FORMAT_FILES := $(wildcard include/*.h src/*.c src/*.h tests/*.c tests/*.h tests
                            bench/*.c bench/*.h fuzz/*.c extras/*.h)
 
 .PHONY: all static shared check check-asan check-ubsan check-tsan check-valgrind \
-        check-header bench fuzz format format-check install clean help
+        check-header check-fuzz-compile bench fuzz format format-check install clean help
 
 all: static shared
 
@@ -97,7 +97,7 @@ $(BUILD)/tests/%: tests/%.c $(STLIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MF $@.d -o $@ $< $(STLIB) $(LDFLAGS)
 
-check: $(TEST_BINS) check-header
+check: $(TEST_BINS) check-header check-fuzz-compile
 	@status=0; for t in $(TEST_BINS); do \
 	    echo "RUN $$t"; $$t || status=1; \
 	done; \
@@ -143,6 +143,17 @@ check-valgrind: $(TEST_BINS)
 	else echo "check-valgrind: valgrind not installed on this machine (CI runs it)"; fi
 
 # ---- benchmarks and fuzzing --------------------------------------------------
+
+# The libFuzzer harness must keep compiling with every toolchain; with
+# -DATREE_FUZZ_MAIN it gets a main() and is run over the seed corpus.
+check-fuzz-compile: $(STLIB)
+	@mkdir -p $(BUILD)/fuzz
+	@if [ -f fuzz/fuzz_parser.c ]; then \
+	    echo "fuzz harness compile + corpus replay"; \
+	    $(CC) $(CPPFLAGS) $(CFLAGS) -DATREE_FUZZ_MAIN -o $(BUILD)/fuzz/fuzz_parser_replay \
+	        fuzz/fuzz_parser.c $(STLIB) $(LDFLAGS) || exit 1; \
+	    $(BUILD)/fuzz/fuzz_parser_replay fuzz/corpus/* || exit 1; \
+	fi
 
 $(BUILD)/bench/%: bench/%.c $(STLIB)
 	@mkdir -p $(dir $@)

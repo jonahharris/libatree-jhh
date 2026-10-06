@@ -1,0 +1,1 @@
+s in ['x', 'y'] or il one of [1, 2, 3] or sl all of ("x")

@@ -4,7 +4,7 @@ This document describes what is implemented. `PLAN.md` describes what will
 be; as milestones land, their sections move here and are kept in sync with
 the code.
 
-## Module map (M0, M1, M2)
+## Module map (M0–M3)
 
 | Module | Purpose |
 |---|---|
@@ -23,6 +23,8 @@ the code.
 | `src/predicate.[ch]` | Leaves: `<attr, kind, op, operand>`. `atree__pred_check` applies the type table and normalizes operands; `negate` is an exact involution for every kind; `eval` is three-valued; hash/equal are structural; cost and wake rank feed node ordering (M4); `print` renders DSL. |
 | `src/event.[ch]` | Public event object: dense value array by attribute id, reusable per-attribute list buffers, strings interned by lookup (unknown → sentinel 0), lists sorted and deduplicated, NaN stored as undefined. Own allocator counters. |
 | `src/tree.c` | `atree_create` (config validation and defaults, attribute and string tables), `atree_destroy`, attribute queries, `atree_stats` (M1 subset). |
+| `src/lexer.[ch]` | Pull-based, allocation-free tokenizer. Tokens carry byte offsets and lengths; string tokens record the quoted span and are unescaped by the parser into its scratch buffer. Integers are range-checked without `strtoll`; floats use `strtod` and must be finite. Also hosts `atree__error_set*`. |
+| `src/parser.c` | Recursive descent for the DSL (`atree_expr_parse`). One-token lookahead plus a lexer-state copy for the two-word keywords (`not in`, `one of`, `is not null`, ...). `and`/`or` chains become one n-ary node; `xor`/`xnor` are binary and left-associative; `between` lowers to two comparisons; `literal in list_attr` lowers to `one of`. Nesting (parentheses and `not`) is bounded by `max_depth` as a recursion guard. Every failure path records a status, offset and message once (`fail`), and later steps become no-ops. |
 | `src/expr.[ch]` | Caller-facing expression trees: public builders (`atree_expr_*`), internal constructors for the parser, `atree__expr_normalize` (the zero suppression filter), structural hash/compare, string-literal resolution by lookup (read path) or interning (write path), the three-valued reference evaluator `atree_expr_eval`, and the DSL printer `atree_expr_print`. Each node owns its allocations through its own `struct atree__mem`. |
 
 ## Invariants established in M0
@@ -84,6 +86,25 @@ the code.
 - **Printing** parenthesizes connective children (`(a and b) or not (c or
   d)`); `not` binds tightest and is printed without parentheses around a
   predicate.
+
+## DSL (M3)
+
+Grammar and precedence are in PLAN.md §3 and at the top of `src/parser.c`
+(tightest first: `not`/`!`, `and`/`&&`, `xor`/`xnor`, `or`/`||`, as in C).
+Keywords are case-insensitive; attribute names are case-sensitive
+identifiers. Compatible with the Rust crate's language; additions: `xor`,
+`xnor`, `between`, `true`/`false`, `literal in list_attr`, `!=`, `==`.
+
+Diagnostics: `atree_error_t` gets the status, the byte offset and length
+of the offending token or predicate, and a message such as
+`attribute 'city' of type string: operator or literal not applicable`.
+Type errors point at the start of the predicate; lexical errors at the
+character. `test_parser` checks about fifty error inputs for status and
+offset. The parser never calls the allocator for the expression itself
+except through the expression constructors; its scratch (list buffers,
+unescaped strings) is balanced per call. The libFuzzer harness in
+`fuzz/fuzz_parser.c` is compiled and replayed over `fuzz/corpus/` by
+`make check` so it cannot rot.
 
 ## Build and quality gates
 

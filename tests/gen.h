@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "../src/atree_internal.h"
+#include "../src/compiler.h"
 
 #include "atree.h"
 
@@ -29,7 +30,7 @@ struct gen_rng {
     uint64_t state;
 };
 
-static uint64_t gen_next(struct gen_rng *r)
+ATREE_MAYBE_UNUSED static uint64_t gen_next(struct gen_rng *r)
 {
     uint64_t z = (r->state += UINT64_C(0x9e3779b97f4a7c15));
     z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
@@ -37,17 +38,17 @@ static uint64_t gen_next(struct gen_rng *r)
     return z ^ (z >> 31);
 }
 
-static uint32_t gen_below(struct gen_rng *r, uint32_t n)
+ATREE_MAYBE_UNUSED static uint32_t gen_below(struct gen_rng *r, uint32_t n)
 {
     return n == 0 ? 0 : (uint32_t)(gen_next(r) % n);
 }
 
-static int gen_chance(struct gen_rng *r, uint32_t percent)
+ATREE_MAYBE_UNUSED static int gen_chance(struct gen_rng *r, uint32_t percent)
 {
     return gen_below(r, 100) < percent;
 }
 
-static uint64_t gen_seed_from_env(uint64_t fallback)
+ATREE_MAYBE_UNUSED static uint64_t gen_seed_from_env(uint64_t fallback)
 {
     const char *s = getenv("ATREE_TEST_SEED");
     if (s != NULL && *s != '\0') {
@@ -60,17 +61,17 @@ static uint64_t gen_seed_from_env(uint64_t fallback)
 
 enum { GEN_B0 = 0, GEN_B1, GEN_I0, GEN_I1, GEN_F0, GEN_S0, GEN_S1, GEN_IL0, GEN_SL0, GEN_NATTRS };
 
-static const atree_attr_def_t GEN_DEFS[GEN_NATTRS] = {
+ATREE_MAYBE_UNUSED static const atree_attr_def_t GEN_DEFS[GEN_NATTRS] = {
     {"b0", ATREE_TYPE_BOOL},   {"b1", ATREE_TYPE_BOOL},      {"i0", ATREE_TYPE_INT},
     {"i1", ATREE_TYPE_INT},    {"f0", ATREE_TYPE_FLOAT},     {"s0", ATREE_TYPE_STRING},
     {"s1", ATREE_TYPE_STRING}, {"il0", ATREE_TYPE_INT_LIST}, {"sl0", ATREE_TYPE_STRING_LIST},
 };
 
 #define GEN_VOCAB_SIZE 6
-static const char *const GEN_VOCAB[GEN_VOCAB_SIZE] = {"alpha", "beta",    "gamma",
-                                                      "delta", "epsilon", "zeta"};
+ATREE_MAYBE_UNUSED static const char *const GEN_VOCAB[GEN_VOCAB_SIZE] = {
+    "alpha", "beta", "gamma", "delta", "epsilon", "zeta"};
 /* Never interned: exercises unknown-string handling. */
-static const char *const GEN_UNKNOWN[2] = {"unknown-1", "unknown-2"};
+ATREE_MAYBE_UNUSED static const char *const GEN_UNKNOWN[2] = {"unknown-1", "unknown-2"};
 
 #define GEN_INT_DOMAIN 6  /* integers 0..5 */
 #define GEN_FLOAT_STEPS 5 /* floats 0.0, 0.5, ..., 2.0 */
@@ -84,8 +85,8 @@ struct gen {
 };
 
 /* Creates the schema tree (cfg may be NULL) and interns the vocabulary. */
-static atree_status_t gen_init(struct gen *g, const atree_config_t *cfg, uint64_t seed,
-                               uint32_t max_depth)
+ATREE_MAYBE_UNUSED static atree_status_t gen_init(struct gen *g, const atree_config_t *cfg,
+                                                  uint64_t seed, uint32_t max_depth)
 {
     atree_status_t st;
     uint32_t i;
@@ -110,7 +111,7 @@ static atree_status_t gen_init(struct gen *g, const atree_config_t *cfg, uint64_
     return ATREE_OK;
 }
 
-static void gen_free(struct gen *g)
+ATREE_MAYBE_UNUSED static void gen_free(struct gen *g)
 {
     atree_destroy(g->tree);
     g->tree = NULL;
@@ -118,17 +119,17 @@ static void gen_free(struct gen *g)
 
 /* ---- random values ------------------------------------------------------ */
 
-static int64_t gen_int(struct gen *g)
+ATREE_MAYBE_UNUSED static int64_t gen_int(struct gen *g)
 {
     return (int64_t)gen_below(&g->rng, GEN_INT_DOMAIN);
 }
 
-static double gen_float(struct gen *g)
+ATREE_MAYBE_UNUSED static double gen_float(struct gen *g)
 {
     return 0.5 * (double)gen_below(&g->rng, GEN_FLOAT_STEPS);
 }
 
-static const char *gen_string(struct gen *g)
+ATREE_MAYBE_UNUSED static const char *gen_string(struct gen *g)
 {
     if (gen_chance(&g->rng, g->unknown_percent)) {
         return GEN_UNKNOWN[gen_below(&g->rng, 2)];
@@ -136,7 +137,7 @@ static const char *gen_string(struct gen *g)
     return GEN_VOCAB[gen_below(&g->rng, GEN_VOCAB_SIZE)];
 }
 
-static uint32_t gen_ints(struct gen *g, int64_t *out, uint32_t min_n)
+ATREE_MAYBE_UNUSED static uint32_t gen_ints(struct gen *g, int64_t *out, uint32_t min_n)
 {
     uint32_t n = min_n + gen_below(&g->rng, GEN_MAX_LIST + 1 - min_n);
     uint32_t i;
@@ -146,7 +147,7 @@ static uint32_t gen_ints(struct gen *g, int64_t *out, uint32_t min_n)
     return n;
 }
 
-static uint32_t gen_strings(struct gen *g, const char **out, uint32_t min_n)
+ATREE_MAYBE_UNUSED static uint32_t gen_strings(struct gen *g, const char **out, uint32_t min_n)
 {
     uint32_t n = min_n + gen_below(&g->rng, GEN_MAX_LIST + 1 - min_n);
     uint32_t i;
@@ -158,7 +159,7 @@ static uint32_t gen_strings(struct gen *g, const char **out, uint32_t min_n)
 
 /* ---- random expressions ------------------------------------------------- */
 
-static atree_expr_t *gen_leaf(struct gen *g)
+ATREE_MAYBE_UNUSED static atree_expr_t *gen_leaf(struct gen *g)
 {
     const atree_t *t = g->tree;
     atree_op_t ops[6] = {ATREE_OP_LT, ATREE_OP_LE, ATREE_OP_GT,
@@ -208,7 +209,7 @@ static atree_expr_t *gen_leaf(struct gen *g)
     }
 }
 
-static atree_expr_t *gen_expr_depth(struct gen *g, uint32_t depth)
+ATREE_MAYBE_UNUSED static atree_expr_t *gen_expr_depth(struct gen *g, uint32_t depth)
 {
     atree_expr_t *kids[4];
     uint32_t n;
@@ -241,14 +242,14 @@ static atree_expr_t *gen_expr_depth(struct gen *g, uint32_t depth)
     return roll < 76 ? atree_expr_and(kids, n) : atree_expr_or(kids, n);
 }
 
-static atree_expr_t *gen_expr(struct gen *g)
+ATREE_MAYBE_UNUSED static atree_expr_t *gen_expr(struct gen *g)
 {
     return gen_expr_depth(g, 1);
 }
 
 /* ---- random events ------------------------------------------------------ */
 
-static atree_status_t gen_event(struct gen *g, atree_event_t *ev)
+ATREE_MAYBE_UNUSED static atree_status_t gen_event(struct gen *g, atree_event_t *ev)
 {
     atree_status_t st = ATREE_OK;
     int64_t ints[GEN_MAX_LIST];
@@ -293,13 +294,13 @@ static atree_status_t gen_event(struct gen *g, atree_event_t *ev)
 
 /* ---- printing helper for failure reports -------------------------------- */
 
-static int gen_sink_write(void *ctx, const char *data, size_t len)
+ATREE_MAYBE_UNUSED static int gen_sink_write(void *ctx, const char *data, size_t len)
 {
     FILE *f = (FILE *)ctx;
     return fwrite(data, 1, len, f) == len ? 0 : 1;
 }
 
-static void gen_dump_expr(const char *label, const atree_expr_t *e)
+ATREE_MAYBE_UNUSED static void gen_dump_expr(const char *label, const atree_expr_t *e)
 {
     fprintf(stderr, "%s: ", label);
     (void)atree_expr_print(e, gen_sink_write, stderr);

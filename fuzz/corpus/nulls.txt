@@ -1,0 +1,1 @@
+s is null or il is not empty or sl is empty and i is not null
