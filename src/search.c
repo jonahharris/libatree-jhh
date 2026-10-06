@@ -214,7 +214,27 @@ static atree_status_t emit(atree_report_t *r, const atree_t *t, atree__nid id,
     return ATREE_OK;
 }
 
-/* Phase 1 (M4): evaluate every leaf against the event. */
+/* Phase-1 seed callback: a leaf is true for this event. Dedupes through the
+ * queued bit (a membership leaf can be hit once per matching element). */
+static atree_status_t seed_leaf(void *ctx, atree__nid id)
+{
+    atree_report_t *r = (atree_report_t *)ctx;
+    if (bit_get(r->queued, id)) {
+        return ATREE_OK;
+    }
+    r->stats.predicates_matched++;
+    bit_set(r->is_true, id);
+    bit_set(r->queued, id);
+    return atree__u32vec_push(&r->mem, &r->queues[1], id);
+}
+
+/* Phase 1 with indexes: look up exactly the satisfied leaves per attribute. */
+static atree_status_t phase1_index(atree_report_t *r, const atree_t *t, const atree_event_t *ev)
+{
+    return atree__index_probe(t, ev, seed_leaf, r, &r->stats.predicates_evaluated);
+}
+
+/* Phase 1 without indexes: evaluate every leaf against the event. */
 static atree_status_t phase1_scan(atree_report_t *r, const atree_t *t, const atree_event_t *ev)
 {
     uint32_t i;
@@ -272,7 +292,11 @@ static atree_status_t search_locked(atree_report_t *r, const atree_t *t, const a
     }
     reset_scratch(r); /* no-op unless a previous search was interrupted */
 
-    st = phase1_scan(r, t, ev);
+    if ((t->flags & ATREE_FLAG_NO_PREDICATE_INDEX) == 0) {
+        st = phase1_index(r, t, ev);
+    } else {
+        st = phase1_scan(r, t, ev);
+    }
     /* Phase 2: level-synchronous sweep. Queues only receive higher levels
      * than the one being drained, so iterating by index is safe. */
     for (level = 1; st == ATREE_OK && level <= t->max_level; level++) {

@@ -21,6 +21,7 @@
 #include "attr.h"
 #include "hash.h"
 #include "identity.h"
+#include "index.h"
 #include "node.h"
 #include "strtab.h"
 
@@ -52,6 +53,8 @@ struct atree {
     struct atree__u32vec leaves;       /* every leaf; phase 1 scans this when unindexed  */
     struct atree__u32vec level_counts; /* nodes per level; [0] unused                   */
     uint32_t max_level;
+    struct atree__index index; /* phase-1 predicate indexes (M5); unused when
+                                  ATREE_FLAG_NO_PREDICATE_INDEX is set           */
 
     /* Subscriptions. */
     struct atree__u64map subs;         /* atree_id_t -> node id / ATREE_SUB_*            */

@@ -4,7 +4,7 @@ This document describes what is implemented. `PLAN.md` describes what will
 be; as milestones land, their sections move here and are kept in sync with
 the code.
 
-## Module map (M0–M4)
+## Module map (M0–M5)
 
 | Module | Purpose |
 |---|---|
@@ -28,6 +28,7 @@ the code.
 | `src/node.[h]` | 64-byte `struct atree__node` (kind, flags, level, hash, use_count, access_child, children, parents, pred slot, index slot) with a static size assertion; node and predicate slabs; the probe type for identity lookups. |
 | `src/identity.[ch]` | Paper's expression-to-node table H_en: open-addressing set of node ids keyed by structural hash; lookups compare the full structure (operator + sorted child ids, or the predicate), so a hash collision can never merge two subexpressions. |
 | `src/tree.c` | Lifecycle, attributes, stats, and index construction: `build()` recurses over the normalized expression, reusing nodes found in the identity table and otherwise creating and linking them (Alg. 1/4); subscriptions attach to the root node (`use_count` = parents + subscriptions); `cascade()` is the iterative Alg. 5 deletion; a failed insert rolls back by cascading over the nodes it created; `atree_validate` checks every invariant. |
+| `src/index.[ch]` | Per-attribute phase-1 indexes: bool true/false lists, equality and membership hash buckets (a membership leaf sits in one bucket per element), sorted ray arrays for range comparisons probed as prefix/suffix, an `is null` list seeded only when the attribute is undefined, and a scan list for negated and list-containment forms. O(1) removal from lists via a per-node position array; buckets and rays are found by key. |
 | `src/search.c` | Report object (per-thread scratch: two bitsets, one queue per level, match list, counters) and Alg. 6 matching with zero suppression and propagation on demand; reset walks the level queues (dirty list) instead of clearing bitsets. Conveniences: callback delivery, exists, allow-list filtering. |
 | `extras/atree_lock_pthread.h` | Header-only `atree_lock_t` adapter over `pthread_rwlock_t`. |
 | `src/expr.[ch]` | Caller-facing expression trees: public builders (`atree_expr_*`), internal constructors for the parser, `atree__expr_normalize` (the zero suppression filter), structural hash/compare, string-literal resolution by lookup (read path) or interning (write path), the three-valued reference evaluator `atree_expr_eval`, and the DSL printer `atree_expr_print`. Each node owns its allocations through its own `struct atree__mem`. |
@@ -146,6 +147,16 @@ negated forms), ties broken by lower level, fewer children, lower id, so
 the choice is deterministic for a given insertion sequence. Figure 6 of the
 paper is a test with exact visit counts; the two-valued inner evaluation is
 sound because NOT has been eliminated (PLAN §4.6).
+
+**Phase 1 with indexes (M5).** For each attribute: undefined → seed the
+`is null` list only; bool → one of two lists; scalar → equality bucket,
+membership bucket and both ray arrays; list → the membership bucket of each
+element; then the attribute's scan list is evaluated. `predicates_evaluated`
+counts index hits plus scan evaluations, so it is independent of how many
+predicates exist on attributes the event does not touch or with values the
+event does not have (`test_perf` adds ten thousand such predicates and
+checks the count is unchanged). `ATREE_FLAG_NO_PREDICATE_INDEX` keeps the
+M4 all-leaves scan as the oracle; the differential suite runs both.
 
 **Reader isolation.** Searches write only to the report. `test_threads`
 runs eight unlocked readers against one tree and compares every result with

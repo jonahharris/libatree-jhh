@@ -203,7 +203,69 @@ TEST(allocation_free_steady_state)
     return 0;
 }
 
+/* Index independence: predicates on attributes the event does not touch,
+ * and non-matching equalities on attributes it does touch, cost nothing in
+ * phase 1. Adding ten thousand of them leaves predicates_evaluated unchanged. */
+TEST(index_independence)
+{
+    atree_t *t = NULL;
+    atree_event_t *ev = NULL;
+    atree_report_t *rep = NULL;
+    atree_report_stats_t before;
+    atree_report_stats_t after;
+    atree_stats_t st;
+    char buf[128];
+    int i;
+    ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    ASSERT_FALSE(ins(t, 1, "x = 1 and p"));
+    ASSERT_FALSE(ins(t, 2, "x > 0 and x < 10"));
+    ASSERT_FALSE(ins(t, 3, "s in ['a', 'b'] or x in [1, 2, 3]"));
+    ASSERT_FALSE(ins(t, 4, "x <> 99 and s <> 'nope'")); /* scan leaves: always evaluated */
+    ASSERT_OK(atree_event_create(t, &ev));
+    ASSERT_OK(atree_report_create(t, &rep));
+    ASSERT_OK(atree_event_set_bool(ev, "p", true));
+    ASSERT_OK(atree_event_set_int(ev, "x", 1));
+    ASSERT_OK(atree_event_set_string(ev, "s", "a", 1));
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_EQ_U64(atree_report_count(rep), 4);
+    atree_report_stats(rep, &before);
+    /* hits: x=1, x>0, x<10, s in, x in, p; scans: x<>99, s<>'nope' */
+    ASSERT_EQ_U64(before.predicates_matched, 8);
+    ASSERT_EQ_U64(before.predicates_evaluated, 8);
+
+    for (i = 0; i < 10000; i++) {
+        /* untouched attributes x1..x4, q; and non-matching equalities on x */
+        snprintf(buf, sizeof buf, "x1 = %d or x2 > %d or (q and x3 in [%d, %d]) or x = %d", i, i, i,
+                 i + 1, i + 100);
+        ASSERT_FALSE(ins(t, (atree_id_t)(100 + i), buf));
+    }
+    atree_stats(t, &st);
+    ASSERT_TRUE(st.leaves > 30000);
+    ASSERT_EQ_U64(st.scanned_leaves, 2);
+    ASSERT_EQ_U64(st.indexed_leaves, st.leaves - 2);
+    ASSERT_OK(atree_search(t, ev, rep));
+    atree_report_stats(rep, &after);
+    ASSERT_EQ_U64(atree_report_count(rep), 4);
+    ASSERT_EQ_U64(after.predicates_evaluated, before.predicates_evaluated);
+    ASSERT_EQ_U64(after.predicates_matched, before.predicates_matched);
+    ASSERT_EQ_U64(after.nodes_visited, before.nodes_visited);
+
+    /* Rays: thresholds above and below the value are found by prefix/suffix. */
+    ASSERT_OK(atree_event_set_int(ev, "x", 5000));
+    ASSERT_OK(atree_search(t, ev, rep));
+    atree_report_stats(rep, &after);
+    /* x > 0, x < 10 is now half true; x1..x3 untouched; x2 > i for i < 5000: those
+     * are on x2 which is undefined, so nothing. Only our own leaves plus scans. */
+    ASSERT_TRUE(after.predicates_evaluated <= 8);
+
+    atree_report_destroy(rep);
+    atree_event_destroy(ev);
+    atree_destroy(t);
+    return 0;
+}
+
 TEST_MAIN_BEGIN()
+RUN_TEST(index_independence);
 RUN_TEST(zero_suppression);
 RUN_TEST(propagation_on_demand);
 RUN_TEST(sharing);

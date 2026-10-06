@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added (M5 — predicate indexes)
+- Per-attribute phase-1 indexes (`src/index.[ch]`): bool lists, equality
+  and membership buckets, sorted ray arrays for ranges, `is null` lists,
+  per-attribute scan lists. Phase-1 cost is now proportional to matched
+  predicates plus scan-list leaves, not to the number of leaves.
+- `atree_stats.indexed_leaves` / `scanned_leaves` report the routing;
+  `atree_validate` checks every leaf is where its route says.
+- `test_perf` index-independence gate.
+
 ### Added (M4 — tree core)
 - `atree_insert`, `atree_insert_expr`, `atree_delete`, `atree_contains`,
   `atree_count`: node sharing through a structural identity table, use

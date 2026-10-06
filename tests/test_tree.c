@@ -417,8 +417,8 @@ TEST(paper_figure_6)
     ASSERT_OK(atree_search(t, ev, rep));
     ASSERT_TRUE(matches_are(rep, want, 2));
     atree_report_stats(rep, &rs);
-    ASSERT_EQ_U64(rs.predicates_evaluated, 10); /* phase 1 scans every leaf (M4) */
-    ASSERT_EQ_U64(rs.predicates_matched, 3);    /* P1, not P7, not P8 */
+    ASSERT_EQ_U64(rs.predicates_evaluated, 3); /* indexed: only the three hits cost anything */
+    ASSERT_EQ_U64(rs.predicates_matched, 3);   /* P1, not P7, not P8 */
     ASSERT_EQ_U64(rs.matches, 2);
     /* Zero suppression: only nodes reached from true leaves are visited:
      * OR(1,2,3), OR(1,2,3,4) [S3], AND(not7,not8) [S6], and S4 = AND(OR(1,2,3),

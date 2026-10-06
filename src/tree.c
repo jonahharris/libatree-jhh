@@ -52,6 +52,11 @@ static atree_status_t check_config(const atree_config_t *cfg)
 
 /* ---- lifecycle ---------------------------------------------------------- */
 
+static bool indexed(const atree_t *t)
+{
+    return (t->flags & ATREE_FLAG_NO_PREDICATE_INDEX) == 0;
+}
+
 static void free_dag(atree_t *t)
 {
     uint32_t i;
@@ -70,6 +75,7 @@ static void free_dag(atree_t *t)
     atree__predvec_free(&t->mem, &t->preds);
     atree__u32vec_free(&t->mem, &t->free_preds);
     atree__idset_free(t);
+    atree__index_free(t);
     atree__u32vec_free(&t->mem, &t->leaves);
     atree__u32vec_free(&t->mem, &t->level_counts);
     atree__u64map_free(&t->mem, &t->subs);
@@ -134,6 +140,7 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     atree__u32vec_init(&t->free_sublists);
     atree__u64vec_init(&t->always);
     atree__u32vec_init(&t->worklist);
+    memset(&t->index, 0, sizeof t->index);
 
     st = atree__attrs_init(&t->mem, &t->attrs, attrs, nattrs);
     if (st != ATREE_OK) {
@@ -142,6 +149,9 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
         return st;
     }
     st = atree__strtab_init(&t->mem, &t->strings);
+    if (st == ATREE_OK) {
+        st = atree__index_init(t);
+    }
     if (st == ATREE_OK) {
         uint32_t hint =
             t->initial_nodes > ATREE_MAX_NODES ? ATREE_MAX_NODES : (uint32_t)t->initial_nodes;
@@ -430,6 +440,9 @@ static void cascade(atree_t *t, atree__nid start)
         }
         atree__idset_remove(t, n->hash, id);
         if (n->kind == ATREE_NODE_LEAF) {
+            if (indexed(t)) {
+                atree__index_remove(t, id);
+            }
             leaves_remove(t, id);
             pred_slot_release(t, n->pred);
             n = node_at(t, id);
@@ -502,7 +515,7 @@ static atree__nid choose_access_child(const atree_t *t, const uint32_t *ids, uin
 
 /* Undo helper for a node whose construction failed part-way. */
 static void abort_new_node(atree_t *t, atree__nid id, uint32_t pred_slot, bool in_leaves,
-                           bool in_identity, bool in_levels, uint32_t linked)
+                           bool in_index, bool in_identity, bool in_levels, uint32_t linked)
 {
     struct atree__node *n = node_at(t, id);
     uint32_t i;
@@ -511,6 +524,9 @@ static void abort_new_node(atree_t *t, atree__nid id, uint32_t pred_slot, bool i
     }
     if (in_identity) {
         atree__idset_remove(t, n->hash, id);
+    }
+    if (in_index) {
+        atree__index_remove(t, id);
     }
     if (in_leaves) {
         leaves_remove(t, id);
@@ -583,23 +599,30 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct atree
     n->pred = slot;
     st = atree__u32vec_push(&t->mem, &t->leaves, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, false, false, false, 0);
+        abort_new_node(t, id, slot, false, false, false, false, 0);
         return st;
     }
     node_at(t, id)->index_slot = t->leaves.len - 1;
+    if (indexed(t)) {
+        st = atree__index_add(t, id);
+        if (st != ATREE_OK) {
+            abort_new_node(t, id, slot, true, false, false, false, 0);
+            return st;
+        }
+    }
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, true, false, false, 0);
+        abort_new_node(t, id, slot, true, indexed(t), false, false, 0);
         return st;
     }
     st = level_inc(t, 1);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, true, true, false, 0);
+        abort_new_node(t, id, slot, true, indexed(t), true, false, 0);
         return st;
     }
     st = atree__u32vec_push(&t->mem, created, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, true, true, true, 0);
+        abort_new_node(t, id, slot, true, indexed(t), true, true, 0);
         return st;
     }
     *out = id;
@@ -662,7 +685,7 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atre
         struct atree__node *cn = node_at(t, n->children.data[i]);
         st = atree__u32vec_push(&t->mem, &cn->parents, id);
         if (st != ATREE_OK) {
-            abort_new_node(t, id, UINT32_MAX, false, false, false, i);
+            abort_new_node(t, id, UINT32_MAX, false, false, false, false, i);
             return st;
         }
         cn->use_count++;
@@ -678,17 +701,17 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct atre
     }
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, UINT32_MAX, false, false, false, n->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, false, false, n->children.len);
         return st;
     }
     st = level_inc(t, level + 1);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, UINT32_MAX, false, true, false, node_at(t, id)->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, true, false, node_at(t, id)->children.len);
         return st;
     }
     st = atree__u32vec_push(&t->mem, created, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, UINT32_MAX, false, true, true, node_at(t, id)->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, true, true, node_at(t, id)->children.len);
         return st;
     }
     *out = id;
@@ -921,8 +944,13 @@ void atree_stats(const atree_t *t, atree_stats_t *out)
     out->leaves = t->leaves.len;
     out->edges = t->edges;
     out->max_level = t->max_level;
-    out->indexed_leaves = 0; /* M5 */
-    out->scanned_leaves = t->leaves.len;
+    if (indexed(t)) {
+        out->indexed_leaves = t->index.indexed;
+        out->scanned_leaves = t->index.scanned;
+    } else {
+        out->indexed_leaves = 0;
+        out->scanned_leaves = t->leaves.len;
+    }
     out->reorganized = t->reorganized;
     out->self_adjusted = t->self_adjusted;
     out->adjust_candidates_skipped = t->adjust_candidates_skipped;
@@ -1037,6 +1065,9 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (atree__pred_hash(&t->preds.data[n->pred]) != n->hash) {
                 FAIL("leaf hash stale", i, 0);
             }
+            if (indexed(t) && !atree__index_contains(t, i)) {
+                FAIL("leaf missing from its predicate index", i, 0);
+            }
             probe.pred = &t->preds.data[n->pred];
             probe.children = NULL;
             probe.nchildren = 0;
@@ -1090,6 +1121,10 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
     }
     if (leaves != t->leaves.len) {
         FAIL("leaf list length mismatch", leaves, t->leaves.len);
+    }
+    if (indexed(t) && t->index.indexed + t->index.scanned != leaves) {
+        FAIL("index counts do not add up to the leaves", t->index.indexed + t->index.scanned,
+             leaves);
     }
     if (edges != t->edges) {
         FAIL("edge count mismatch", edges, t->edges);
