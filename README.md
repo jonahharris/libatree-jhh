@@ -10,10 +10,10 @@ every expression it satisfies without evaluating each one. Typical uses:
 advertising exchanges, complex event processing, publish/subscribe filtering,
 alert routing.
 
-> **Status: pre-release, under construction.** Milestone M0 (scaffold) is
-> complete: public header, allocator layer, containers, build system, tests,
-> CI. The tree itself arrives in M4. See `PLAN.md` for the full design and
-> `CHANGELOG.md` for progress.
+> **Status: pre-release, under construction.** M0 (scaffold) and M1
+> (attributes, predicates, events, `atree_create`) are complete. The DAG
+> itself (insert/search/delete) arrives in M4. See `PLAN.md` for the full
+> design and `CHANGELOG.md` for progress.
 
 ## Design goals
 

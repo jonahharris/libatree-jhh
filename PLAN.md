@@ -73,6 +73,12 @@ design (search takes `&self`).
    explicit access-child designation.
 9. `rust_decimal` floats; in C we use `double` with documented exact-equality
    semantics and NaN handling.
+10. **`all of` is reversed**: the crate's `all_of(event, literal)` tests that
+   every *event* element is in the literal list. be-tree (and the natural
+   reading) test that every *literal* is in the event list. We follow
+   be-tree: `attr all of [a, b]` ⇔ {a, b} ⊆ attr.
+11. `is empty` on an undefined list attribute hits an `unreachable!()` panic
+   in `NullOperator::evaluate`. We return undefined.
 
 ### 0.3 Embedded C A-Tree `reference/cep-atree` (atree.c, expr.c, cep.h)
 
@@ -505,7 +511,10 @@ const char *atree_version(void);     /* "0.1.0" */
   pattern: fill a new tree, publish its pointer with an atomic store, let
   in-flight searches on the old tree drain, destroy it.
 - An `atree_event_t` or `atree_report_t` is owned by one thread at a time.
-  Create one per matching thread; each is reusable indefinitely.
+  Create one per matching thread; each is reusable indefinitely. Each carries
+  its own allocator counters (same allocator, separate `struct atree__mem`),
+  so creating or growing one from a reader thread never writes to the tree;
+  `atree_stats.bytes_allocated` therefore covers the tree alone.
 - In steady state (reusable event/report, no growth) a search performs no
   allocator calls. Event/report creation and growth do call the allocator
   from reader threads, so a custom allocator must be thread-safe if the
@@ -551,7 +560,7 @@ Type rules (validated at parse time against the attribute table):
 | `< <= > >=` | int (int literal), float (int or float literal; ints promote) |
 | `= <>` | int, float, string |
 | `in` / `not in` | int (int list), string (string list) |
-| `one of` / `none of` / `all of` | int_list (int list), string_list (string list) |
+| `one of` / `none of` / `all of` | int_list (int list), string_list (string list). `all of`: every literal is in the attribute's list (be-tree semantics) |
 | `is null` / `is not null` | bool, int, float, string |
 | `is empty` / `is not empty` | int_list, string_list |
 

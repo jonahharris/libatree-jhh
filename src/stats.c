@@ -45,6 +45,8 @@ const char *atree_strerror(atree_status_t status)
         return "invalid literal";
     case ATREE_ERR_CORRUPT:
         return "internal structure is inconsistent";
+    case ATREE_ERR_CANCELLED:
+        return "cancelled by callback";
     default:
         return "unknown status";
     }

@@ -83,7 +83,8 @@ typedef enum atree_status {
     ATREE_ERR_TOO_DEEP,        /* expression nesting exceeds atree_config_t.max_depth */
     ATREE_ERR_LIMIT,           /* a capacity limit was reached (nodes, lists, ids)   */
     ATREE_ERR_INVALID_LITERAL, /* NaN/inf float, empty list, integer overflow, ...   */
-    ATREE_ERR_CORRUPT          /* atree_validate() found an inconsistency            */
+    ATREE_ERR_CORRUPT,         /* atree_validate() found an inconsistency            */
+    ATREE_ERR_CANCELLED        /* a caller-supplied callback asked to stop           */
 } atree_status_t;
 
 /* Human-readable, static, NUL-terminated description of a status code. */
