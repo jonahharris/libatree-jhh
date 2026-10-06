@@ -1,0 +1,10 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: atree
+Description: A-Tree: dynamic index over arbitrary Boolean expressions
+Version: @VERSION@
+Libs: -L${libdir} -latree
+Cflags: -I${includedir}

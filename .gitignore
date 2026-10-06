@@ -1,0 +1,15 @@
+build/
+build-*/
+*.o
+*.d
+*.a
+*.so
+*.so.*
+*.dylib
+*.dSYM/
+*.gcda
+*.gcno
+*.profraw
+compile_commands.json
+.cache/
+reference/

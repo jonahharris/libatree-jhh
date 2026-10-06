@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  linux-gcc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make CC=gcc check
+      - run: make CC=gcc MODE=release BUILD=build-release check
+      - run: make CC=gcc check-ubsan
+
+  linux-clang-asan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make CC=clang CXX=clang++ check
+      - run: make CC=clang CXX=clang++ check-asan
+
+  linux-clang-tsan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make CC=clang CXX=clang++ check-tsan
+
+  linux-valgrind:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y valgrind
+      - run: make CC=gcc check-valgrind
+
+  linux-32bit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
+      - run: make CC=gcc CFLAGS=-m32 LDFLAGS=-m32 check
+
+  macos-clang:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: make check
+      - run: make check-asan
+
+  windows-msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -B build -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build --config Debug
+      - run: ctest --test-dir build -C Debug --output-on-failure
+
+  cmake-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DATREE_SANITIZE=address,undefined
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - run: make format-check CLANG_FORMAT=clang-format-18
+        env:
+          PATH: /usr/lib/llvm-18/bin:${{ env.PATH }}
+
+  bench-regression:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make MODE=release bench
+      - name: regression gates (active once bench/baseline.json exists, M7)
+        run: |
+          if [ -x build/bench/bench_synthetic ] && [ -f bench/baseline.json ]; then
+            build/bench/bench_synthetic --quick --check bench/baseline.json
+          else
+            echo "no benchmark baseline yet"
+          fi
