@@ -54,6 +54,18 @@ All notable changes to this project are documented here. The format follows
   paper's real workload (§6.2); `docs/COMPARISON.md` records that
   construction on that profile is 47× slower than the paper's figure and
   why (bottom-up build instead of Alg. 4's lookup-first insert).
+- `bench_synthetic` reproduces the paper's sharing by default: and/or
+  nodes average `--fanout` children (the paper's "average number of child
+  nodes"; previously 2..fanout), predicates come from a pool sized for
+  `--pred-share` uses each (18.35, §6.1; the pool is text-deduplicated and
+  filled at a calibrated rate so every slot is used), `--share` takes one
+  reuse probability per depth (default 54%, measured 4.33 uses per
+  subexpression at 1M; `--ads` uses the Figure 7(a) per-level profile),
+  and the output reports predicate and subexpression sharing. The previous
+  workload is `--fanout 3 --share 30 --pred-share 0`. `docs/COMPARISON.md`
+  now compares against the paper's own synthetic curves (Figures 11–13)
+  at matching parameters and sharing, and corrects the per-visited-node
+  figure (about 185 ns in a release build, not 0.36 µs).
 - `bench_synthetic` gains `--dump`, `--rust-compatible` and `--cap`;
   `bench/rust_compare` compares the Rust `a-tree` crate on identical files;
   `docs/COMPARISON.md` records the results. Baseline regenerated for the

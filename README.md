@@ -188,47 +188,51 @@ tree unchanged (string literals interned before the failure stay interned).
 
 ## Performance
 
-Measured with `build/bench/bench_synthetic` (ABE-Gen-style workload from the
-paper's Table 3: 1000 dimensions, cardinality 100, depth 3, fan-out 4, 20
-attribute-value pairs per event, Zipf α 0.6, 30% subexpression reuse) on an
-Apple M-series laptop, release build, single thread, 100 000 expressions,
-2000 events. This generator produces a very dense workload (about 2700
-matches per event); real workloads match far fewer expressions and are
-correspondingly faster.
+Measured with `build-release/bench/bench_synthetic` (ABE-Gen-style workload
+with the paper's Table 3 defaults: 1000 dimensions, cardinality 100, depth
+3, four children on average, 20 attribute-value pairs per event, Zipf α
+0.6, and the paper's sharing of about 18 uses per predicate and 4.3 per
+subexpression) on an Apple M-series laptop, release build, single thread,
+100 000 expressions, 2000 events. This generator produces a very dense
+workload (about 2800 matches per event); real workloads match far fewer
+expressions and are correspondingly faster.
 
 | Configuration | search p50 | search p99 | nodes visited / event | predicates evaluated / event |
 |---|---|---|---|---|
-| all optimizations on | 0.40 ms | 0.71 ms | 4 497 | 3 322 |
-| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 0.53 ms | 0.96 ms | 9 226 | 3 322 |
-| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 1.24 ms | 1.73 ms | 4 497 | 233 770 |
-| everything off (flags 15) | 1.38 ms | 2.02 ms | 9 632 | 233 770 |
-| all on, 5 pairs per event | 0.08 ms | 0.32 ms | 1 184 | 853 |
+| all optimizations on | 0.27 ms | 0.56 ms | 2 803 | 1 623 |
+| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 0.34 ms | 0.66 ms | 5 923 | 1 623 |
+| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 0.58 ms | 0.90 ms | 2 803 | 93 418 |
+| everything off (flags 15) | 0.71 ms | 1.11 ms | 6 746 | 93 418 |
+| all on, 5 pairs per event | 0.06 ms | 0.22 ms | 749 | 420 |
 
 All timings here and in `docs/COMPARISON.md` are from `make MODE=release`
 builds (-O2) with nothing else running; the paper's numbers are gcc -O3.
 
-Index size for the 100 000 expressions: 409 790 nodes, 582 566 edges, about
-930 bytes per expression (reorganize and self-adjust removed about 48 000
-edges). Inserts run at 318 000 expressions/s with all optimizations on and
-365 000/s with reorganize and self-adjust disabled; an insert looks each
+Index size for the 100 000 expressions: 198 377 nodes, 435 624 edges, about
+500 bytes per expression (reorganize and self-adjust removed about 109 000
+edges). Inserts run at 343 000 expressions/s with all optimizations on and
+366 000/s with reorganize and self-adjust disabled; an insert looks each
 subexpression up before building it, so a repeated subexpression costs one
 probe, and the candidate search for new nodes uses anchor lists. Deletes
-exceed 350 000/s.
+exceed 1 500 000/s.
 
 **Against the Rust `a-tree` crate**, on identical datasets in the dialect
 both accept, libatree returns exactly the same matches and searches 60×
 faster at 20 000 expressions and 97× faster at 100 000 (0.34 ms vs 33 ms
 p50) in a fifth of the memory, because the crate evaluates every predicate
 per event while libatree probes per-attribute indexes. **Against the
-paper's Table 4** (an Ads-derived workload of 1.39M expressions: 1.6 ms,
-2.9 s construction, 205 MB) libatree at 1M synthetic expressions matches a
-far denser workload in 5.7 ms p50, constructs in 4.4 s (227 000
-expressions/s, parsing timed separately) and uses about 724 bytes per
-expression, 4.4× the paper's memory. On a profile with the paper's predicate
-sharing (`bench_synthetic --ads`: 1.39M expressions, 54 predicates each,
-every predicate shared 83 times) construction takes 30 s. Memory is the
-widest gap; `docs/COMPARISON.md` has the per-component breakdown, the
-caveats and the reproduction commands.
+paper's own synthetic curves** (Figures 11–13 at 1M expressions with the
+same parameters and sharing: about 0.65 ms, 5.3 s construction, 300 MB)
+libatree constructs in 4.4 s (228 000 expressions/s, parsing timed
+separately), uses 416 MB allocated (1.39×) and matches in 4.4 ms p50 on
+events that match 27 500 expressions each, a density the paper's figure
+cannot have had. On the paper's real-workload profile (`bench_synthetic
+--ads`: 1.39M expressions, 43 predicates each, every predicate used 69
+times) construction takes 12.4 s against the paper's 2.9 s, because the
+paper inserts pre-identified predicates with arithmetic identities while
+libatree hashes and probes every leaf from its literal. `docs/COMPARISON.md`
+has the per-component memory breakdown, the insert profile, the caveats and
+the reproduction commands.
 
 Work counters, not timings, are the regression gates (`tests/test_perf.c`
 and `make bench-check` against `bench/baseline.json`): zero suppression

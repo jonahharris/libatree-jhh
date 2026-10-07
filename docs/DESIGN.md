@@ -280,8 +280,14 @@ ThreadSanitizer.
 `make bench` builds `bench_synthetic` and `bench_file`. The synthetic
 generator follows the paper's ABE-Gen (§6.1): dimensions and values are
 drawn from Zipf distributions, operators from the 40/40/10/5/5
-and/or/not/xor/xnor mix, depth and fan-out are bounded, and subexpression
-strings are reused from per-depth pools so sharing resembles Figure 7.
+and/or/not/xor/xnor mix, an expression of depth d has its root at depth 1
+and predicates at depth d, and/or nodes have `--fanout` children on
+average, predicates are drawn from a pool sized so each is used
+`--pred-share` times (18.35 by default, the paper's §6.1 figure), and
+subexpression strings are reused from per-depth Zipf-ranked pools with a
+per-depth probability (`--share`; the default 54% reproduces the paper's
+4.33 uses per subexpression, and `--ads` uses the Figure 7(a) profile).
+The benchmark prints the achieved predicate and subexpression sharing.
 `--verify K` compares every search against brute-force evaluation of the
 first K expressions. `make bench-check` runs the quick preset and compares
 the deterministic counts (nodes, edges, bytes, matches, nodes visited,

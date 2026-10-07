@@ -7,7 +7,7 @@ the ratios are the point. Everything here is reproducible:
 ```sh
 make MODE=release bench
 # identical datasets in the dialect both implementations accept
-build/bench/bench_synthetic --rust-compatible --expressions 100000 --events 2000 --dump /tmp/s100k
+build-release/bench/bench_synthetic --rust-compatible --fanout 3 --share 30 --pred-share 0 --expressions 100000 --events 2000 --dump /tmp/s100k
 build/bench/bench_file /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events
 (cd bench/rust_compare && cargo run --release -- /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events)
 ```
@@ -22,9 +22,11 @@ against unoptimized objects, which understated libatree by 2-2.5×.
 
 ## Same data, both implementations
 
-ABE-Gen-style workload (1000 dimensions, cardinality 100, depth 3, fan-out 4,
-20 attribute-value pairs per event, Zipf α 0.6, 30% subexpression reuse),
-generated once and fed to both. Both return exactly the same number of
+ABE-Gen-style workload (1000 dimensions, cardinality 100, depth 3, 2–4
+children per node, 20 attribute-value pairs per event, Zipf α 0.6, 30%
+subexpression reuse, no predicate pool; the generator's current defaults
+reproduce the paper's sharing instead, and this dataset is now
+`--fanout 3 --share 30 --pred-share 0`), generated once and fed to both. Both return exactly the same number of
 matches on every dataset, which is a cross-implementation check of the
 semantics (the dialect avoids `all of`, whose meaning is reversed in the
 crate, and `xor`/`xnor`, which it lacks).
@@ -55,123 +57,128 @@ On the crate's own tiny dataset (`benches/data/search.json`, 9 expressions,
 8.9 µs per event; `bench_file` on the converted data measures about 1.0 µs
 per event.
 
-## Against the paper (Table 4)
+## Against the paper (Figures 11–13, Table 4)
 
-The paper's Table 4 uses a proprietary ads workload (1 392 196 expressions,
-about 20 attribute-value pairs per event, predicates shared about 68 times
-on average) on a 2.2 GHz 2018 CPU; its A-Tree row reports 1.6 ms matching,
-2.9 s construction and 205 MB. That data is not available, so the comparison
-below uses `bench_synthetic --paper` (1 000 000 expressions from the same
-generator as above). The synthetic workload is far denser than an ads
-workload (thousands of matches per event instead of a handful) and its
-predicates are shared only a few times, so matching does more work per
-event and the index has more nodes per expression than the paper's.
+The paper reports the A-Tree on its own generator at the Table 3 defaults
+(Figures 11(a), 12(a) and 13(a): memory, matching time and construction
+time against the number of expressions) and on a proprietary ads workload
+(Table 4; see the next section). `bench_synthetic --paper` uses the Table 3
+defaults and reproduces the paper's sharing: §6.1 says a predicate is shared
+about 18.35 times and a subexpression about 4.33 times in the default
+workload, and the generator measures 18.55 and 4.33 at 1M expressions
+(predicates come from a pool sized for the target, 54% of the
+subexpressions at each depth are reused from a Zipf-ranked pool, and
+and/or nodes average four children as in the paper). The paper's figures
+below are read off the curves at 1M expressions.
 
-| | Paper, A-Tree row of Table 4 (1.39M real ads expressions) | libatree, `--paper` (1M synthetic expressions, 3000 events) |
+| | Paper, A-Tree at 1M synthetic expressions (Figures 11a, 12a, 13a) | libatree `--paper` (1M expressions, 3000 events) |
 |---|---|---|
-| matching time | 1.6 ms | p50 5.7 ms, p99 10.2 ms, with about 26 000 matches and 44 000 nodes visited per event |
-| construction | 2.9 s | 4.4 s (227 000 expressions/s, normalize + build; parsing timed separately) |
-| memory | 205 MB (147 B/expression) | 724 B/expression allocated, 901 MB RSS; 3.03M nodes, 5.69M edges |
-| machine | 2.2 GHz, 2018 | Apple M-series laptop, 2026 |
+| construction | about 5.3 s | 4.4 s (228 000 expressions/s; normalize + build, parsing timed separately) |
+| memory | about 300 MB | 416 MB allocated (1.87M nodes, 4.20M edges, 222 B per node); 781 MB peak RSS, which includes the benchmark's own predicate pool and the slab-doubling transient |
+| matching time | about 0.65 ms | p50 4.4 ms, p99 8.8 ms, with 27 500 matches, 23 600 nodes visited and 12 400 true predicates per event |
+| machine | 2.2 GHz Intel, 2018, gcc 7.4 -O3 | Apple M-series laptop, 2026, clang -O2 |
 
-What the comparison does and does not say:
+What the comparison says:
 
-- **Matching.** The two workloads are not comparable in density. Ours
-  matches 27 000 expressions per event and visits 44 000 nodes; at roughly
-  0.36 µs per visited node, matching cost is where the paper's model
-  (§5.4: proportional to the matching predicates, subexpressions and
-  expressions) says it should be. On the shared datasets above, where the
-  density is the same for both implementations, libatree is 26–42× faster
-  than the crate; on a sparse event (`--event-size 5`) at 100k expressions
-  the p50 is 0.22 ms.
-- **Construction.** libatree builds the 1M index in 4.4 s against the
-  paper's 2.9 s for 1.39M expressions (4.4 µs against 2.1 µs per
-  expression, with three nodes created per expression here against mostly
-  identity hits there). Our figure covers normalization,
-  the DAG build and journaling (the benchmark parses outside the timed
-  region, like the paper, whose expressions are already structured) on a
-  workload that shares far less: the paper's predicates are shared 68
-  times on average, so most of its inserts are identity hits, while the
-  synthetic default shares each predicate about 2.3 times. The dominant cost used to be the reorganize
-  candidate scan over popular leaves: before anchor lists the 1M build ran
-  at 40 500 expressions/s (24.7 s). Anchor lists (docs/DESIGN.md,
-  "Reorganize") made that scan exact and cheap, 181 000/s (5.5 s), and the
-  lookup-first insert plus arena normalization (below) brought it to
-  227 000/s (4.4 s). At 100k the same three points are 116 000, 239 000 and
-  318 000/s, the last within 13% of running with reorganize and self-adjust
-  disabled (365 000/s), and the index has marginally fewer edges than
-  before (582 566 vs 582 906 at 100k; 5 689 875 vs 5 714 435 at 1M). The cap still
-  bounds self-adjust, which scans the full parent list of a new node's
-  least popular child; lowering it to 256 changes 100k throughput by about
-  3%.
-- **Memory.** Per expression libatree uses about 4.9× the paper's figure,
-  but the synthetic workload also has about 3 nodes per expression where
-  the ads workload, with predicates shared 68 times on average, has far
-  fewer. Per node libatree spends roughly 220 bytes: a 64-byte node, two
-  small vectors with a minimum capacity of four, the predicate slab, the
-  identity table, the per-attribute index and the subscription maps.
-  Trimming vector minimum capacities and packing the predicate slab are
-  the obvious next steps if memory matters more than simplicity.
+- **Construction is faster than the paper's curve, but for a different
+  reason than it should be.** Figure 9(c) puts reorganize and self-adjust
+  at 52% of the paper's construction time; here they are 14% (3.8 s with
+  both disabled, 4.4 s with both on). The paper's base path is fast because
+  its expressions arrive as structures over predicate ids and its identity
+  is arithmetic over child ids (§4.2.1: and → add, or → multiply), so a
+  repeated expression, which at this sharing is about half of the inserts,
+  costs a few additions and one probe. libatree normalizes every expression
+  (copy, sort, dedupe), hashes every leaf from its literal, probes each,
+  then verifies structurally. In a no-inline profile of the 1M insert phase
+  (taken on the previous workload, same parameters apart from sharing) leaf
+  hashing is 11–12% (every leaf is hashed twice by two different functions),
+  identity and content table probes and inserts about 8% (a probe reads the
+  slot, the node and the predicate), normalization with its sorts about
+  10%, the waker-region bookkeeping of the parent lists about 11%, the
+  allocator about 5%; reorganize and self-adjust together are the measured
+  14%.
+- **Memory is 1.39× the paper's at the same sharing.** The index has 856 000
+  leaves for 646 000 distinct predicates: the 210 000 extra leaves are the
+  negated variants that NOT push-down creates (the paper pushes NOT to the
+  leaves too, §5.2.1, so it carries them as well). The 1.01M inner nodes
+  match the paper's 4.39M subexpression instances at 4.33× sharing. The
+  rest is per-node cost, 222 B against an implied 180 B; the breakdown
+  below shows where it goes. Peak RSS exceeds the allocated bytes because
+  the node slab doubles from 134 MB to 268 MB at 2.1M nodes with both
+  copies resident, and the identity tables rehash the same way.
+- **Matching is not comparable in density.** Each event here matches
+  27 500 expressions (2.75% of the index) and 12 400 predicates are true;
+  visiting 23 600 nodes in 0.65 ms on 2018 hardware would be 28 ns per
+  node, so the paper's events must be far sparser (it does not describe its
+  event generator beyond the pairs per event). Per visited node libatree
+  spends about 185 ns, of which the final sort of the matched ids is about
+  20%, re-evaluating woken OR nodes (always true under zero suppression)
+  about 7% and reading each woken parent only for its level about 19%. On
+  a sparse event (`--event-size 5`) at 100k expressions the p50 is 59 µs.
 
-## Construction on a paper-like sharing profile
+The previous revision of this comparison used a generator with 2–4
+children per node, 30% reuse and no predicate pool (predicates shared 5.6
+times at 1M); that workload is still available as
+`--fanout 3 --share 30 --pred-share 0` and measured 5.7 ms, 4.4 s and
+724 MB allocated at 1M.
+
+## Construction on the paper's real-workload profile
 
 The paper's real workload (§6.2) shares each predicate 68.76 times on
 average over 973 794 distinct predicates, which implies about 48 predicates
-per expression. `bench_synthetic --ads` reproduces those metrics: 1 392 196
-expressions over 122 dimensions, predicates drawn by Zipf rank (exponent
-0.8) from a pool of 973 794 distinct predicates, depth 4 with 2–7 children,
-half of the subexpressions at each depth reused from a pool, 20
-attribute-value pairs per event. Inserts are timed without parsing, as in
-the paper, whose expressions are already structured.
+per expression, and Figure 7(a) gives the sharing per level (28×, 11× and
+7.5× for the three lowest subexpression levels). `bench_synthetic --ads`
+reproduces those metrics: 1 392 196 expressions over 122 dimensions, depth
+4 with four children on average, predicates drawn by Zipf rank (exponent
+0.8) from a pool sized for 68.76 uses each, subexpressions reused with
+probability 87%, 32% and 61% at the three inner depths (which gives the
+Figure 7(a) ratios), 20 attribute-value pairs per event. Inserts are timed
+without parsing, as in the paper, whose expressions are already structured.
 
-| | Paper (§6.2 workload) | libatree `--ads` |
+| | Paper (§6.2 workload, Table 4) | libatree `--ads` |
 |---|---|---|
 | expressions | 1 392 196 | 1 392 196 |
-| predicates per expression | 1–56 | 54.4 on average |
-| distinct predicates | 973 794 | 915 361 leaves |
-| predicate sharing | 68.76× | 82.7× |
-| construction | 2.9 s | 30.4 s (45 800 expressions/s) |
-| memory | 205 MB | 1.78 GB RSS; 4.47M nodes, 18.8M edges |
+| predicates per expression | 1–56 | 42.8 on average |
+| distinct predicates | 973 794 | 865 780 (1 109 393 leaves after NOT push-down) |
+| predicate sharing | 68.76× | 68.78× |
+| subexpression sharing | 28× / 11× / 7.5× by level | 23.7× overall |
+| construction | 2.9 s (1.4 s without reorganize and self-adjust) | 12.4 s (112 000 expressions/s); 10.8 s without reorganize and self-adjust |
+| memory | 205 MB | 488 MB allocated (2.03M nodes, 4.25M edges); 854 MB peak RSS |
+| matching | 1.6 ms | p50 46 ms with 313 000 matches per event |
 
-So on a profile with the paper's sharing, libatree constructs about 10×
-more slowly than the paper's figure, far more than the 1.5× gap on the
-default synthetic workload. On the 200k trial of this profile the
-lookup-first insert and arena normalization doubled insert throughput
-(30 600/s to 62 200/s) and cut search p50 by 22% (16.8 ms to 13.1 ms).
+On the paper's own sharing profile libatree constructs about 4× more slowly
+than the paper and uses 2.4× its memory. Matching is not comparable: 22% of
+the synthetic expressions match every event, which no ads workload does.
 What the work on this profile showed:
 
 - **Alg. 4 returns in O(1) on a hit.** The paper computes the expression's
   identity first (`generateID(expr)`) and returns the existing node without
   visiting its subexpressions. The first libatree build recursed bottom-up,
-  hashing, looking up and interning every one of the 75.7M predicate
-  instances and running reorganize for every one of the ~29M inner-node
-  instances although 96% of them already existed. Insert now hashes the
-  normalized expression from its text, looks every subexpression up first
-  (leaves in one probe without allocation, inner nodes through a content
-  table keyed by flat structure, every hit verified) and reorganizes only
-  the nodes that are new (docs/DESIGN.md, "Lookup first"). Normalization,
-  which had been copying every leaf and literal with one allocation each
-  and became the largest remaining cost, now builds its copy in one arena.
-  Together these doubled insert throughput on this profile.
-- **What remains.** The profile of the insert phase is now the greedy
-  reorganize and self-adjust on new nodes (about half), normalization
-  (about a third) and the leaf probes. Reorganize and self-adjust are the
-  paper's own algorithms; the remaining gap to 2.9 s is also a workload
-  difference: the paper's expressions share subexpressions at every level
-  (2.88× even at level 9), while our pool reuse of 50% per depth still
-  leaves 3.55M inner nodes for 1.39M expressions, which is why the index is
-  eight times larger than the paper's and why most inserts create nodes.
-- **Matching on this profile.** p50 is 134 ms with 352 000 matches per
-  event; the numbers are not comparable to the paper's because a quarter
-  of the synthetic expressions match every event. The waker regions of the
-  parent lists (docs/DESIGN.md, "Edges and hot leaves") are worth 11% of
-  search time at 1M on the default profile and 22% on the 200k trial of
-  this one.
+  hashing, looking up and interning every predicate instance and running
+  reorganize for every inner-node instance although nearly all of them
+  already existed; on an earlier version of this profile that was 47× the
+  paper's time. Insert now hashes the normalized expression from its text,
+  looks every subexpression up first (leaves in one probe without
+  allocation, inner nodes through a content table keyed by flat structure,
+  every hit verified) and reorganizes only the nodes that are new
+  (docs/DESIGN.md, "Lookup first"). Normalization, which had been copying
+  every leaf and literal with one allocation each, builds its copy in one
+  arena.
+- **What remains is the per-leaf cost of a wide expression.** With 43
+  predicates per expression the insert spends most of its 8.9 µs on the
+  leaves: in the profile of the previous version of this profile (54
+  predicates per expression) normalization was 23%, the leaf hashes and
+  probes 17% (each probe is three dependent cache misses: slot, node,
+  predicate) and sorting 15%; reorganize and self-adjust are the measured
+  13% here. The paper's 1 µs per expression over 48 predicates is only
+  possible with integer predicate ids and arithmetic identities.
+- **Memory** is dominated by the 1.11M leaves (the paper's 974k predicates
+  plus negated variants) and the per-node cost discussed above.
 
 ## Where the memory goes
 
 A white-box breakdown of the 100k-expression tree built from the same-data
-set above (342 109 nodes, 503 407 edges, 88.4 MB allocated through the
+set above (the 2–4 children, 30% reuse, no-pool generator) (342 109 nodes, 503 407 edges, 88.4 MB allocated through the
 allocator, 258 B per node, 884 B per expression), measured by walking the
 internal structures:
 
