@@ -33,6 +33,28 @@
 #define ATREE_SUB_ALWAYS (UINT32_MAX - 1) /* constant-true expression  */
 #define ATREE_SUB_NEVER (UINT32_MAX - 2)  /* constant-false expression */
 
+/* Insert journal (tree.c): what an insert changed, undone newest-first on
+ * failure. */
+enum atree__journal_kind {
+    ATREE_J_CREATED, /* node created by this insert                           */
+    ATREE_J_REWIRED, /* self-adjust rewired `node`; old child set kept        */
+    ATREE_J_LEVEL    /* `node` changed level from old_level                    */
+};
+
+struct atree__journal_entry {
+    uint8_t kind;
+    atree__nid node;
+    atree__nid added;                  /* REWIRED: the child that replaced old ones */
+    struct atree__u32vec old_children; /* REWIRED: owned until commit             */
+    uint64_t old_hash;
+    uint32_t old_level;
+    atree__nid old_access;
+};
+
+ATREE_VEC_DEFINE(journalvec, struct atree__journal_entry);
+
+struct atree__arena;
+
 struct atree {
     struct atree__mem mem;
     atree_lock_t lock; /* copy of cfg->lock; valid when has_lock */
@@ -68,6 +90,8 @@ struct atree {
     uint64_t nsubs;
 
     /* Writer-side scratch. */
+    struct journalvec journal;       /* insert journal, reused across inserts        */
+    struct atree__arena *norm_arena; /* normalization arena, reused across inserts   */
     struct atree__u32vec worklist;
     struct atree__u32vec scratch; /* lookup verification: flat member sets      */
     struct atree__u32vec mark; /* per node id: epoch stamp for set tests (reorganize/self-adjust) */

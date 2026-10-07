@@ -23,6 +23,11 @@ All notable changes to this project are documented here. The format follows
   Release-build effect of this group: 100k inserts 239k/s → 318k/s, 1M
   inserts 181k/s → 227k/s, search p50 −15% at 100k and −11% at 1M, 2× on
   the `--ads` sharing profile; memory +10% at 1M.
+- The normalization arena, the insert journal and the operand buffer of
+  `build_inner` are kept in the tree and reused instead of being allocated
+  and freed per insert; the arena no longer zeroes blocks that are written
+  in full. Allocator calls per insert on the synthetic workload: 12.2 + 4.2
+  frees → 7.8 + 0.2; insert throughput +5–8% (release build).
 - `make MODE=release` builds into `build-release/` so a debug `make check`
   can no longer leave -O0 objects for a release benchmark to link.
 - Inner nodes record, per child, their position in the child's parent

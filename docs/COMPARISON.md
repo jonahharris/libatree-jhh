@@ -203,6 +203,14 @@ minimum capacity of four, which is why parent arrays carry 3.2 MB of unused
 capacity for an average of 1.5 parents, and why a phase-1 bucket for a
 single predicate costs 32 B. None of these are structural; they are
 allocation policy, and together they are roughly a third of the total.
+Two cheap policy changes were tried and rejected: a minimum vector
+capacity of one instead of four cut live bytes by 6% at 1M expressions but
+cost 4–5% insert throughput and raised peak RSS at 100k, and growing large
+arrays by half instead of doubling cut live bytes by 19% at 1M but raised
+peak RSS by 8% through realloc churn. The slab slack wants a segmented slab
+that never moves (no realloc, no copy, at most one chunk of slack) and the
+subscription cost wants a single-id encoding; both are structural changes
+rather than tuning.
 
 ## Other implementations
 

@@ -103,6 +103,17 @@ atree_status_t atree__expr_new_nary(enum atree__expr_kind kind, atree_expr_t **c
  * freeable). */
 atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, atree_expr_t **out);
 
+/* Same, into a caller-owned arena, which the caller later resets or frees;
+ * the result must not be passed to atree_expr_free. Lets a writer reuse one
+ * arena across inserts so that normalizing allocates nothing in steady
+ * state. */
+atree_status_t atree__arena_new(const atree_t *tree, struct atree__arena **out);
+void atree__arena_free(struct atree__arena *a);
+/* Forgets everything allocated so far, keeping one chunk for reuse. */
+void atree__arena_reset(struct atree__arena *a);
+atree_status_t atree__expr_normalize_in(struct atree__arena *a, const atree_expr_t *e,
+                                        size_t max_depth, atree_expr_t **out);
+
 /* Structural identity. Children are compared in stored order (canonical
  * after normalization). Raw strings compare by bytes. */
 bool atree__expr_equal(const atree_expr_t *a, const atree_expr_t *b);

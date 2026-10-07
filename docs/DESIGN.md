@@ -148,10 +148,14 @@ that are actually new. The expression's resolution state is cached on the
 normalized copy so nothing is looked up twice.
 
 **Normalization.** The normalized copy is bump-allocated from one arena
-(nodes, child arrays, lists and string bytes) and released together; the
-only per-insert allocations are the arena chunks. Normalizing used to make
-one allocation per node and per literal and was the largest cost of
-inserting a 50-predicate expression. Deleting
+(nodes, child arrays, lists and string bytes). The arena, the insert
+journal and the operand buffer of `build_inner` (a stack region of
+`t->scratch`) are writer-side scratch kept in the tree and reused, so a
+steady-state insert allocates only what the index keeps: about 8 allocator
+calls per expression on the synthetic workload, down from 12 plus 4 frees,
+and 1.7 KB requested instead of 6.2 KB. Normalizing used to make one
+allocation per node and per literal and was the largest cost of inserting
+a 50-predicate expression. Deleting
 detaches the id and cascades over children whose count reaches zero
 (Alg. 5), iteratively, with a worklist reserved up front so deletion cannot
 fail once it starts mutating.

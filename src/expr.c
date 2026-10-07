@@ -690,8 +690,7 @@ static void *arena_alloc(struct atree__arena *a, size_t size)
     }
     p = (char *)a->head + a->used;
     a->used += need;
-    memset(p, 0, need);
-    return p;
+    return p; /* not zeroed: every caller writes the whole block */
 }
 
 static void arena_free(struct atree__arena *a)
@@ -704,6 +703,36 @@ static void arena_free(struct atree__arena *a)
         c = next;
     }
     atree__free(&mem, a, sizeof *a);
+}
+
+void atree__arena_free(struct atree__arena *a)
+{
+    if (a != NULL) {
+        arena_free(a);
+    }
+}
+
+void atree__arena_reset(struct atree__arena *a)
+{
+    struct arena_chunk *keep = NULL;
+    struct arena_chunk *c = a->head;
+    while (c != NULL) {
+        struct arena_chunk *next = c->next;
+        if (keep == NULL || c->size > keep->size) {
+            if (keep != NULL) {
+                atree__free(&a->mem, keep, keep->size);
+            }
+            keep = c;
+        } else {
+            atree__free(&a->mem, c, c->size);
+        }
+        c = next;
+    }
+    a->head = keep;
+    if (keep != NULL) {
+        keep->next = NULL;
+    }
+    a->used = round_align(sizeof(struct arena_chunk));
 }
 
 static atree_status_t arena_new(const atree_t *tree, struct atree__arena **out)
@@ -727,6 +756,7 @@ static atree_expr_t *norm_node(struct atree__arena *a, const atree_t *tree,
     if (e == NULL) {
         return NULL;
     }
+    memset(e, 0, sizeof *e);
     e->arena = a;
     e->tree = tree;
     e->kind = (uint8_t)kind;
@@ -963,10 +993,27 @@ static atree_status_t normalize_rec(struct atree__arena *a, const atree_expr_t *
     }
 }
 
+atree_status_t atree__arena_new(const atree_t *tree, struct atree__arena **out)
+{
+    return arena_new(tree, out);
+}
+
+atree_status_t atree__expr_normalize_in(struct atree__arena *a, const atree_expr_t *e,
+                                        size_t max_depth, atree_expr_t **out)
+{
+    if (e == NULL || out == NULL) {
+        return ATREE_ERR_INVALID_ARG;
+    }
+    *out = NULL;
+    if (e->depth > max_depth) {
+        return ATREE_ERR_TOO_DEEP;
+    }
+    return normalize_rec(a, e, false, out);
+}
+
 atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, atree_expr_t **out)
 {
     struct atree__arena *a;
-    atree_expr_t *root = NULL;
     atree_status_t st;
     if (e == NULL || out == NULL) {
         return ATREE_ERR_INVALID_ARG;
@@ -979,18 +1026,12 @@ atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, at
     if (st != ATREE_OK) {
         return st;
     }
-    st = normalize_rec(a, e, false, &root);
+    st = atree__expr_normalize_in(a, e, max_depth, out);
     if (st != ATREE_OK) {
         arena_free(a);
-        return st;
+        *out = NULL;
     }
-    if (root->arena == NULL) {
-        /* cannot happen: every normalized node is arena-allocated */
-        arena_free(a);
-        return ATREE_ERR_INVALID_ARG;
-    }
-    *out = root;
-    return ATREE_OK;
+    return st;
 }
 
 /* ---- resolving string literals ------------------------------------------ */
