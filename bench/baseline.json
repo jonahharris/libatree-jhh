@@ -1,10 +1,11 @@
 {
   "expressions": 20000, "events": 500, "dims": 1000, "cardinality": 100,
   "event_size": 20, "depth": 3, "fanout": 4, "alpha": 0.600, "seed": 1, "flags": 0,
-  "nodes": 98231, "leaves": 62446, "edges": 118455, "max_level": 5,
-  "bytes_allocated": 23447890, "reorganized": 3867, "self_adjusted": 978,
-  "total_matches": 265287, "total_nodes_visited": 448190, "total_predicates_evaluated": 499290, "total_predicates_matched": 465079, "total_and_woken": 144247,
-  "predicate_instances": 145548, "predicate_sharing": 2.33, "parse_per_sec": 163609,
-  "insert_per_sec": 127234, "search_p50_us": 170.00, "search_p99_us": 301.00, "search_mean_us": 173.53, "delete_per_sec": 657635,
+  "nodes": 40887, "leaves": 19205, "edges": 90171, "max_level": 6,
+  "bytes_allocated": 11546174, "reorganized": 4861, "self_adjusted": 1435,
+  "total_matches": 289624, "total_nodes_visited": 304061, "total_predicates_evaluated": 190798, "total_predicates_matched": 180119, "total_and_woken": 76124,
+  "predicate_instances": 233958, "predicate_distinct": 13351, "predicate_sharing": 17.52,
+  "inner_instances": 86528, "inner_sharing": 3.99, "parse_per_sec": 333100,
+  "insert_per_sec": 386354, "search_p50_us": 52.00, "search_p99_us": 115.00, "search_mean_us": 54.64, "delete_per_sec": 2594370,
   "verify_mismatches": 0
 }
