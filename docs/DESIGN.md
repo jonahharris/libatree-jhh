@@ -85,13 +85,20 @@ and keeps the paper-to-code mapping (§9.2) and the performance rationale
   by `atree__expr_cmp` (hash first, then structure) and deduplicated; a
   single remaining child replaces its connective. Depth is bounded by
   `max_depth` before normalization starts; normalization recursion follows
-  the input, so stack use is bounded too.
+  the input, so stack use is bounded too. Size is bounded by
+  `max_expr_nodes` (default 8192) as the normalized nodes are allocated:
+  every step creates a node or returns an operand, so the budget bounds
+  the work as well, and an expression over it fails with
+  `ATREE_ERR_LIMIT` before anything is built.
 - **Soundness.** These rewrites are identities of Kleene three-valued logic,
   so normalization preserves the exact three-valued result, not only
   "true vs not true". `test_expr` checks this on 400 random expressions × 40
   random events (with undefined attributes, NaN floats, unknown strings) and
   checks idempotence and normal-form structure. The XOR expansion duplicates
-  its operands, so nested XOR grows exponentially; the depth limit bounds it.
+  its operands, so a chain of n XORs has a normal form of about 2^n nodes
+  while its depth is only n+1; the node budget, not the depth limit, is what
+  stops it (a 40-XOR chain fails in microseconds; before the budget 20 of
+  them took 0.6 s and 1.2 GB).
 - **Printing** parenthesizes connective children (`(a and b) or not (c or
   d)`); `not` binds tightest and is printed without parentheses around a
   predicate.

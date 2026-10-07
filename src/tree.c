@@ -132,10 +132,13 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
             : ATREE_DEFAULT_MAX_ADJUST_CANDIDATES;
         t->initial_nodes =
             cfg->initial_nodes != 0 ? cfg->initial_nodes : ATREE_DEFAULT_INITIAL_NODES;
+        t->max_expr_nodes =
+            cfg->max_expr_nodes != 0 ? cfg->max_expr_nodes : ATREE_DEFAULT_MAX_EXPR_NODES;
     } else {
         t->max_depth = ATREE_DEFAULT_MAX_DEPTH;
         t->max_adjust_candidates = ATREE_DEFAULT_MAX_ADJUST_CANDIDATES;
         t->initial_nodes = ATREE_DEFAULT_INITIAL_NODES;
+        t->max_expr_nodes = ATREE_DEFAULT_MAX_EXPR_NODES;
     }
     atree__nodevec_init(&t->nodes);
     atree__u32vec_init(&t->free_nodes);
@@ -1820,7 +1823,7 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
         st = atree__arena_new(t, &t->norm_arena);
     }
     if (st == ATREE_OK) {
-        st = atree__expr_normalize_in(t->norm_arena, expr, t->max_depth, &norm);
+        st = atree__expr_normalize_in(t->norm_arena, expr, t->max_depth, t->max_expr_nodes, &norm);
     }
     if (st != ATREE_OK) {
         if (t->norm_arena != NULL) {
@@ -1828,8 +1831,9 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
         }
         atree__wrunlock(t);
         set_err(err, st,
-                st == ATREE_ERR_TOO_DEEP ? "expression nested deeper than max_depth"
-                                         : atree_strerror(st));
+                st == ATREE_ERR_TOO_DEEP    ? "expression nested deeper than max_depth"
+                    : st == ATREE_ERR_LIMIT ? "normalized expression exceeds max_expr_nodes"
+                                            : atree_strerror(st));
         return st;
     }
     if (atree__u64map_get(&t->subs, id, NULL)) {

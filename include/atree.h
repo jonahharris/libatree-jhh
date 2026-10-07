@@ -179,6 +179,12 @@ typedef struct atree_config {
     size_t initial_nodes;               /* node capacity hint; 0 -> library default   */
     size_t max_adjust_candidates;       /* bound on reorganize/self-adjust candidate
                                            scans per node; 0 -> 4096                  */
+    size_t max_expr_nodes;              /* nodes a normalized expression may have;
+                                           0 -> 8192. XOR/XNOR expand to AND/OR and
+                                           double per nesting level, so this, not
+                                           max_depth, bounds the work one expression
+                                           can cost; exceeding it fails the insert
+                                           with ATREE_ERR_LIMIT                       */
 } atree_config_t;
 
 /* Fills *cfg with defaults (all NULL/0: defaults are applied at create time). */

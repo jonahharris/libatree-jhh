@@ -412,6 +412,63 @@ TEST(depth_limit)
     return 0;
 }
 
+/* XOR/XNOR expand to AND/OR and double per nesting level, so a chain of a
+ * few dozen fits every depth limit while its normal form would be
+ * astronomically large. The node budget must stop it, quickly, with
+ * ATREE_ERR_LIMIT, and must not get in the way of an ordinary expression. */
+TEST(node_limit)
+{
+    atree_config_t cfg;
+    atree_t *t = NULL;
+    atree_expr_t *e;
+    atree_expr_t *out = NULL;
+    atree_error_t err;
+    char text[2048];
+    size_t len = 0;
+    int i;
+
+    ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    e = atree_expr_var(t, "private");
+    for (i = 0; i < 40; i++) {
+        e = atree_expr_xor(e, atree_expr_cmp_int(t, "exchange_id", ATREE_OP_EQ, i));
+    }
+    ASSERT_NOT_NULL(e);
+    ASSERT_STATUS(atree__expr_normalize(e, 64, &out), ATREE_ERR_LIMIT);
+    ASSERT_NULL(out);
+    ASSERT_STATUS(atree_insert_expr(t, 1, e, &err), ATREE_ERR_LIMIT);
+    ASSERT_EQ_U64(atree_count(t), 0);
+    atree_expr_free(e);
+
+    len = (size_t)snprintf(text, sizeof text, "private");
+    for (i = 0; i < 40; i++) {
+        len += (size_t)snprintf(text + len, sizeof text - len, " xor exchange_id = %d", i);
+    }
+    ASSERT_STATUS(atree_insert(t, 1, text, len, &err), ATREE_ERR_LIMIT);
+    ASSERT_EQ_U64(atree_count(t), 0);
+
+    /* A short chain is fine, and so is a wide ordinary expression. */
+    ASSERT_OK(
+        atree_insert(t, 2, "private xor test xor exchange_id = 1 xor price > 2", SIZE_MAX, &err));
+    ASSERT_OK(atree_insert(
+        t, 3, text,
+        (size_t)snprintf(text, sizeof text, "%s",
+                         "private and test and exchange_id = 1 and price > 2 and country = 'US'"),
+        &err));
+    atree_destroy(t);
+
+    /* The budget is configurable. */
+    atree_config_init(&cfg);
+    cfg.max_expr_nodes = 4;
+    ASSERT_OK(atree_create(&cfg, DEFS, NDEFS, &t));
+    ASSERT_STATUS(
+        atree_insert(t, 1, "private and test and exchange_id = 1 and price > 2 and country = 'US'",
+                     SIZE_MAX, &err),
+        ATREE_ERR_LIMIT);
+    ASSERT_OK(atree_insert(t, 2, "private and test", SIZE_MAX, &err));
+    atree_destroy(t);
+    return 0;
+}
+
 /* ---- reference evaluation ----------------------------------------------- */
 
 TEST(reference_evaluation_three_valued)
@@ -707,6 +764,7 @@ RUN_TEST(builders_validate_and_print);
 RUN_TEST(mixed_trees_are_rejected);
 RUN_TEST(normalize_identities);
 RUN_TEST(depth_limit);
+RUN_TEST(node_limit);
 RUN_TEST(reference_evaluation_three_valued);
 RUN_TEST(normalization_preserves_evaluation);
 RUN_TEST(lookup_and_intern);

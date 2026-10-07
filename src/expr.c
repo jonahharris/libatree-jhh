@@ -653,6 +653,10 @@ struct atree__arena {
     struct atree__mem mem;
     struct arena_chunk *head;
     size_t used; /* bytes handed out from head, header included */
+    /* Node budget of the normalization in progress (see norm_node). */
+    size_t nodes;
+    size_t max_nodes;
+    bool limit_hit;
 };
 
 static size_t round_align(size_t n)
@@ -748,13 +752,23 @@ static atree_status_t arena_new(const atree_t *tree, struct atree__arena **out)
     return ATREE_OK;
 }
 
+/* Allocates a node of the normalized tree. Every normalization step creates
+ * at least one node or returns an operand, so the node budget bounds the
+ * total work; a budget failure is told apart from an allocation failure by
+ * a->limit_hit at the top level. */
 static atree_expr_t *norm_node(struct atree__arena *a, const atree_t *tree,
                                enum atree__expr_kind kind)
 {
-    atree_expr_t *e = arena_alloc(a, sizeof *e);
+    atree_expr_t *e;
+    if (a->nodes >= a->max_nodes) {
+        a->limit_hit = true;
+        return NULL;
+    }
+    e = arena_alloc(a, sizeof *e);
     if (e == NULL) {
         return NULL;
     }
+    a->nodes++;
     memset(e, 0, sizeof *e);
     e->arena = a;
     e->tree = tree;
@@ -998,8 +1012,9 @@ atree_status_t atree__arena_new(const atree_t *tree, struct atree__arena **out)
 }
 
 atree_status_t atree__expr_normalize_in(struct atree__arena *a, const atree_expr_t *e,
-                                        size_t max_depth, atree_expr_t **out)
+                                        size_t max_depth, size_t max_nodes, atree_expr_t **out)
 {
+    atree_status_t st;
     if (e == NULL || out == NULL) {
         return ATREE_ERR_INVALID_ARG;
     }
@@ -1007,7 +1022,15 @@ atree_status_t atree__expr_normalize_in(struct atree__arena *a, const atree_expr
     if (e->depth > max_depth) {
         return ATREE_ERR_TOO_DEEP;
     }
-    return normalize_rec(a, e, false, out);
+    a->nodes = 0;
+    a->max_nodes = max_nodes;
+    a->limit_hit = false;
+    st = normalize_rec(a, e, false, out);
+    if (st == ATREE_ERR_NOMEM && a->limit_hit) {
+        *out = NULL;
+        return ATREE_ERR_LIMIT;
+    }
+    return st;
 }
 
 atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, atree_expr_t **out)
@@ -1025,7 +1048,7 @@ atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, at
     if (st != ATREE_OK) {
         return st;
     }
-    st = atree__expr_normalize_in(a, e, max_depth, out);
+    st = atree__expr_normalize_in(a, e, max_depth, ATREE_DEFAULT_MAX_EXPR_NODES, out);
     if (st != ATREE_OK) {
         arena_free(a);
         *out = NULL;

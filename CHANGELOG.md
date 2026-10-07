@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `atree_config_t.max_expr_nodes` (default 8192): the number of nodes a
+  normalized expression may have. XOR/XNOR expand to AND/OR and double per
+  nesting level, so a chain of 20 XORs, depth 21 and well inside
+  `max_depth`, normalized in 0.6 s and 1.2 GB and each further XOR
+  quadrupled that; a short subscription string was a denial of service.
+  The budget is checked as nodes are allocated, so it bounds time as well
+  as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
+
 ### Changed
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table

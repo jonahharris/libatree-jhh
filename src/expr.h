@@ -98,7 +98,10 @@ atree_status_t atree__expr_new_nary(enum atree__expr_kind kind, atree_expr_t **c
 /* Produces an equivalent expression containing only TRUE/FALSE (at the root
  * only), PRED, AND and OR, with n-ary flattened connectives whose children
  * are canonically ordered and unique. Fails with ATREE_ERR_TOO_DEEP when
- * e->depth > max_depth. */
+ * e->depth > max_depth and with ATREE_ERR_LIMIT when the normalized tree
+ * would have more than max_nodes nodes (atree__expr_normalize uses the
+ * library default): XOR/XNOR expansion doubles per nesting level, so the
+ * depth alone does not bound the work. */
 /* The result is a self-contained tree allocated from a single arena: free it
  * with atree_expr_free on its root only (children are not individually
  * freeable). */
@@ -113,7 +116,7 @@ void atree__arena_free(struct atree__arena *a);
 /* Forgets everything allocated so far, keeping one chunk for reuse. */
 void atree__arena_reset(struct atree__arena *a);
 atree_status_t atree__expr_normalize_in(struct atree__arena *a, const atree_expr_t *e,
-                                        size_t max_depth, atree_expr_t **out);
+                                        size_t max_depth, size_t max_nodes, atree_expr_t **out);
 
 /* Structural identity. Children are compared in stored order (canonical
  * after normalization). Raw strings compare by bytes. */

@@ -27,6 +27,7 @@
 
 #define ATREE_DEFAULT_MAX_DEPTH 64u
 #define ATREE_DEFAULT_MAX_ADJUST_CANDIDATES 4096u
+#define ATREE_DEFAULT_MAX_EXPR_NODES 8192u
 #define ATREE_DEFAULT_INITIAL_NODES 1024u
 
 /* Values in the subscription map that are not node ids. */
@@ -62,6 +63,7 @@ struct atree {
     unsigned flags;
     size_t max_depth;
     size_t max_adjust_candidates;
+    size_t max_expr_nodes;
     size_t initial_nodes;
     struct atree__attrs attrs;
     struct atree__strtab strings;
