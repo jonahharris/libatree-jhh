@@ -32,28 +32,42 @@ enum atree__node_kind {
 
 enum { ATREE_NODE_HAS_SUBS = 1u << 0 };
 
-/* Anchors: every inner node designates one child as its anchor (the child
+/* Parent lists are kept in four regions so that two scans read only what
+ * they need, without ever filtering a long list:
+ *
+ *   [0, end_aw)      anchored wakers
+ *   [end_aw, end_a)  anchored non-wakers
+ *   [end_a, end_w)   non-anchored wakers
+ *   [end_w, len)     non-anchored non-wakers
+ *
+ * Anchors: every inner node designates one child as its anchor (the child
  * with the fewest parents when the node was created, re-chosen on rewire).
- * In each node's parent list the parents it anchors come first
- * ([0, nanchor)), and the per-edge position entries carry the anchor flag in
- * their high bit. Reorganize (Alg. 2) only scans anchored parents: a cover
- * set contains its own anchor, so this finds every cover while skipping the
- * long parent lists of popular leaves, which are rarely anchors because they
- * were already popular when their parents were built. */
+ * Reorganize (Alg. 2) scans only anchored parents, [0, end_a): a cover set
+ * contains its own anchor, so this finds every cover while skipping the
+ * long parent lists of popular leaves, which are rarely anchors because
+ * they were already popular when their parents were built. The per-edge
+ * position entries carry the anchor flag in their high bit.
+ *
+ * Wakers: a parent wakes this node during matching when it is an OR node,
+ * or an AND node whose access child is this node (propagation on demand,
+ * §5.2.2), or any AND node when propagation on demand is off. Search
+ * (emit in search.c) walks [0, end_aw) and [end_a, end_w) and never looks
+ * at an AND parent it cannot wake, which for a popular leaf is most of
+ * them. Moving an edge between regions is a bounded number of swaps and
+ * never allocates. */
 struct atree__node {
-    uint8_t kind;            /* enum atree__node_kind                                      */
-    uint8_t flags;           /* ATREE_NODE_*                                                */
-    uint16_t level;          /* 1 for leaves, 1 + max(children) otherwise; <= 65535          */
-    uint32_t nanchor;        /* parents[0, nanchor) are the parents this node is the anchor of */
-    uint64_t hash;           /* structural hash (identity table)                 */
-    uint32_t use_count;      /* paper's useCount == parents.len + #subscriptions */
-    atree__nid access_child; /* AND with propagation on demand: the waking child */
+    uint8_t kind;    /* enum atree__node_kind                                      */
+    uint8_t flags;   /* ATREE_NODE_*                                                */
+    uint16_t level;  /* 1 for leaves, 1 + max(children) otherwise; <= 65535          */
+    uint32_t end_aw; /* parents region boundaries, see above                        */
+    uint64_t hash;   /* structural hash (identity table)                 */
+    uint32_t end_a;
+    uint32_t end_w;
+    atree__nid access_child;       /* AND with propagation on demand: the waking child */
+    uint32_t pred;                 /* leaf: index into the predicate slab, else UINT32_MAX    */
     struct atree__u32vec children; /* inner: sorted ascending, unique, len >= 2     */
     struct atree__u32vec parents;  /* every structural parent                       */
-    uint32_t pred;                 /* leaf: index into the predicate slab, else UINT32_MAX    */
-    uint32_t index_slot;           /* leaf: position in the phase-1 leaf list / index (M5)    */
 };
-
 ATREE_STATIC_ASSERT(sizeof(struct atree__node) <= 64, node_fits_in_a_cache_line);
 
 ATREE_VEC_DEFINE(atree__nodevec, struct atree__node);
@@ -61,10 +75,13 @@ ATREE_VEC_DEFINE(atree__predvec, struct atree__pred);
 ATREE_VEC_DEFINE(atree__sublistvec, struct atree__u64vec);
 
 /* Description of a node that may not exist yet, for identity lookups. */
+struct atree_expr;
+
 struct atree__probe {
     uint8_t kind;
     uint64_t hash;
-    const struct atree__pred *pred; /* leaf */
+    const struct atree__pred *pred; /* leaf: resolved predicate, or NULL when `leaf` is set */
+    const struct atree_expr *leaf;  /* leaf: unresolved expression leaf (string literals raw) */
     const uint32_t *children;       /* inner: sorted unique ids */
     uint32_t nchildren;
 };

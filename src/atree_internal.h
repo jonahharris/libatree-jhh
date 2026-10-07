@@ -48,8 +48,11 @@ struct atree {
     struct atree__nodevec nodes;     /* slab; kind == ATREE_NODE_FREE for free slots */
     struct atree__u32vec free_nodes; /* recycled slots                                */
     struct atree__predvec preds;     /* predicate slab, referenced by leaves           */
+    struct atree__u32vec leaf_pos;   /* per predicate slot: position in `leaves`       */
     struct atree__u32vec free_preds;
     struct atree__idset identity;      /* paper's H_en                                   */
+    struct atree__idset content;       /* inner nodes by flat content (identity.h)       */
+    struct atree__u64vec csum;         /* per node: sum of flat member keys (inner nodes) */
     struct atree__u32vec leaves;       /* every leaf; phase 1 scans this when unindexed  */
     struct atree__u32vec level_counts; /* nodes per level; [0] unused                   */
     uint32_t max_level;
@@ -66,6 +69,7 @@ struct atree {
 
     /* Writer-side scratch. */
     struct atree__u32vec worklist;
+    struct atree__u32vec scratch; /* lookup verification: flat member sets      */
     struct atree__u32vec mark; /* per node id: epoch stamp for set tests (reorganize/self-adjust) */
     uint32_t mark_epoch;
 

@@ -106,7 +106,20 @@ uint32_t atree__sort_unique_u32(uint32_t *v, uint32_t n)
     if (n < 2) {
         return n;
     }
-    qsort(v, n, sizeof *v, cmp_u32);
+    if (n <= 24) {
+        /* insertion sort: operand sets and flat member sets are small */
+        for (i = 1; i < n; i++) {
+            uint32_t x = v[i];
+            uint32_t j = i;
+            while (j > 0 && v[j - 1] > x) {
+                v[j] = v[j - 1];
+                j--;
+            }
+            v[j] = x;
+        }
+    } else {
+        qsort(v, n, sizeof *v, cmp_u32);
+    }
     for (i = 0; i < n; i++) {
         if (m == 0 || v[m - 1] != v[i]) {
             v[m++] = v[i];

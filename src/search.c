@@ -179,6 +179,25 @@ static int cmp_u64(const void *pa, const void *pb)
     return (a > b) - (a < b);
 }
 
+static atree_status_t wake_range(atree_report_t *r, const atree_t *t, const struct atree__node *n,
+                                 uint32_t from, uint32_t to)
+{
+    uint32_t i;
+    for (i = from; i < to; i++) {
+        atree__nid pid = n->parents.data[i];
+        atree_status_t st;
+        if (bit_get(r->queued, pid)) {
+            continue;
+        }
+        bit_set(r->queued, pid);
+        st = atree__u32vec_push(&r->mem, &r->queues[t->nodes.data[pid].level], pid);
+        if (st != ATREE_OK) {
+            return st;
+        }
+    }
+    return ATREE_OK;
+}
+
 /* A node is true: collect its subscriptions, wake its parents. */
 static atree_status_t emit(atree_report_t *r, const atree_t *t, atree__nid id,
                            const struct atree__node *n)
@@ -194,24 +213,14 @@ static atree_status_t emit(atree_report_t *r, const atree_t *t, atree__nid id,
             }
         }
     }
-    for (i = 0; i < n->parents.len; i++) {
-        atree__nid pid = n->parents.data[i];
-        const struct atree__node *p = &t->nodes.data[pid];
-        /* Propagation on demand: only the access child wakes an AND node. */
-        if (p->kind == ATREE_NODE_AND && p->access_child != ATREE_NID_NONE &&
-            p->access_child != id) {
-            continue;
-        }
-        if (bit_get(r->queued, pid)) {
-            continue;
-        }
-        bit_set(r->queued, pid);
-        st = atree__u32vec_push(&r->mem, &r->queues[p->level], pid);
-        if (st != ATREE_OK) {
-            return st;
-        }
+    /* Propagation on demand: only the access child wakes an AND node. The
+     * parent list keeps the parents this node wakes in two regions
+     * (node.h), so no parent that stays asleep is ever read. */
+    st = wake_range(r, t, n, 0, n->end_aw);
+    if (st != ATREE_OK) {
+        return st;
     }
-    return ATREE_OK;
+    return wake_range(r, t, n, n->end_a, n->end_w);
 }
 
 /* Phase-1 seed callback: a leaf is true for this event. Dedupes through the

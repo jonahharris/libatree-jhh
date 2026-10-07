@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "atree_internal.h"
+#include "expr.h"
 #include "hash.h"
 
 #define IDSET_MIN_CAP 64u
@@ -21,13 +22,37 @@ void atree__idset_init(struct atree__idset *s)
     s->used = 0;
 }
 
-void atree__idset_free(struct atree *t)
+static void set_free(struct atree *t, struct atree__idset *s)
 {
-    struct atree__idset *s = &t->identity;
     if (s->cap != 0) {
         atree__free_array(&t->mem, s->slots, s->cap, sizeof *s->slots);
     }
     atree__idset_init(s);
+}
+
+void atree__idset_free(struct atree *t)
+{
+    set_free(t, &t->identity);
+}
+
+void atree__cset_free(struct atree *t)
+{
+    set_free(t, &t->content);
+}
+
+/* The key a set files a node under. */
+typedef uint64_t (*key_fn)(const struct atree *t, atree__nid id);
+
+static uint64_t identity_key(const struct atree *t, atree__nid id)
+{
+    return t->nodes.data[id].hash;
+}
+
+uint64_t atree__content_key(const struct atree *t, atree__nid id)
+{
+    const struct atree__node *n = &t->nodes.data[id];
+    uint64_t tag = n->kind == ATREE_NODE_AND ? UINT64_C(0xa11d) : UINT64_C(0x0e0e);
+    return atree__hash_combine(atree__hash_u64(tag), t->csum.data[id]);
 }
 
 static uint32_t cap_for(uint32_t need)
@@ -43,9 +68,8 @@ static uint32_t cap_for(uint32_t need)
     return cap;
 }
 
-static atree_status_t rehash(struct atree *t, uint32_t new_cap)
+static atree_status_t rehash(struct atree *t, struct atree__idset *s, key_fn key, uint32_t new_cap)
 {
-    struct atree__idset *s = &t->identity;
     uint32_t *slots = atree__alloc_array(&t->mem, new_cap, sizeof *slots);
     uint32_t mask = new_cap - 1;
     uint32_t i;
@@ -56,7 +80,7 @@ static atree_status_t rehash(struct atree *t, uint32_t new_cap)
     for (i = 0; i < s->cap; i++) {
         uint32_t id = s->slots[i];
         if (id != ATREE_NID_NONE && id != ATREE_IDSET_TOMB) {
-            uint32_t j = (uint32_t)t->nodes.data[id].hash & mask;
+            uint32_t j = (uint32_t)key(t, id) & mask;
             while (slots[j] != ATREE_NID_NONE) {
                 j = (j + 1) & mask;
             }
@@ -81,7 +105,7 @@ atree_status_t atree__idset_reserve(struct atree *t, uint32_t n)
     if (cap <= t->identity.cap) {
         return ATREE_OK;
     }
-    return rehash(t, cap);
+    return rehash(t, &t->identity, identity_key, cap);
 }
 
 static bool matches(const struct atree *t, atree__nid id, const struct atree__probe *p)
@@ -91,6 +115,9 @@ static bool matches(const struct atree *t, atree__nid id, const struct atree__pr
         return false;
     }
     if (p->kind == ATREE_NODE_LEAF) {
+        if (p->leaf != NULL) {
+            return atree__expr_leaf_equals(p->leaf, &t->preds.data[n->pred], &t->strings);
+        }
         return atree__pred_equal(&t->preds.data[n->pred], p->pred);
     }
     return n->children.len == p->nchildren &&
@@ -120,9 +147,9 @@ atree__nid atree__idset_find(const struct atree *t, const struct atree__probe *p
     }
 }
 
-atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id)
+static atree_status_t set_insert(struct atree *t, struct atree__idset *s, key_fn key, uint64_t hash,
+                                 atree__nid id)
 {
-    struct atree__idset *s = &t->identity;
     uint32_t mask;
     uint32_t j;
 
@@ -160,7 +187,7 @@ atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id
                 return ATREE_ERR_LIMIT;
             }
         }
-        st = rehash(t, cap);
+        st = rehash(t, s, key, cap);
         if (st != ATREE_OK) {
             return st;
         }
@@ -176,9 +203,18 @@ atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id
     return ATREE_OK;
 }
 
-bool atree__idset_remove(struct atree *t, uint64_t hash, atree__nid id)
+atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id)
 {
-    struct atree__idset *s = &t->identity;
+    return set_insert(t, &t->identity, identity_key, hash, id);
+}
+
+atree_status_t atree__cset_insert(struct atree *t, uint64_t hash, atree__nid id)
+{
+    return set_insert(t, &t->content, atree__content_key, hash, id);
+}
+
+static bool set_remove(struct atree__idset *s, uint64_t hash, atree__nid id)
+{
     uint32_t mask;
     uint32_t j;
     if (s->cap == 0) {
@@ -195,6 +231,39 @@ bool atree__idset_remove(struct atree *t, uint64_t hash, atree__nid id)
             s->slots[j] = ATREE_IDSET_TOMB;
             s->count--;
             return true;
+        }
+        j = (j + 1) & mask;
+    }
+}
+
+bool atree__idset_remove(struct atree *t, uint64_t hash, atree__nid id)
+{
+    return set_remove(&t->identity, hash, id);
+}
+
+bool atree__cset_remove(struct atree *t, uint64_t hash, atree__nid id)
+{
+    return set_remove(&t->content, hash, id);
+}
+
+atree__nid atree__cset_next(const struct atree *t, uint64_t hash, uint32_t *cursor)
+{
+    const struct atree__idset *s = &t->content;
+    uint32_t mask;
+    uint32_t j;
+    if (s->cap == 0) {
+        return ATREE_NID_NONE;
+    }
+    mask = s->cap - 1;
+    j = *cursor == UINT32_MAX ? ((uint32_t)hash & mask) : ((*cursor + 1) & mask);
+    for (;;) {
+        uint32_t id = s->slots[j];
+        if (id == ATREE_NID_NONE) {
+            return ATREE_NID_NONE;
+        }
+        if (id != ATREE_IDSET_TOMB && atree__content_key(t, id) == hash) {
+            *cursor = j;
+            return id;
         }
         j = (j + 1) & mask;
     }

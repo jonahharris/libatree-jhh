@@ -8,6 +8,7 @@
 #include <assert.h>
 
 #include "hash.h"
+#include "strtab.h"
 
 static bool op_is_valid(uint8_t op)
 {
@@ -358,6 +359,55 @@ uint64_t atree__pred_hash(const struct atree__pred *p)
     uint64_t h = atree__hash_u64(UINT64_C(0x70726564) ^ p->attr);
     h = atree__hash_combine(h, ((uint64_t)p->kind << 8) | p->op);
     return atree__hash_combine(h, atree__value_hash(&p->operand));
+}
+
+static uint64_t str_content_hash(const struct atree__strtab *strings, uint32_t id)
+{
+    uint32_t len = 0;
+    const char *s = atree__strtab_get(strings, id, &len);
+    return atree__hash_bytes(s, s == NULL ? 0 : len);
+}
+
+uint64_t atree__pred_content_hash(const struct atree__pred *p, const struct atree__strtab *strings)
+{
+    const struct atree__value *v = &p->operand;
+    uint64_t h = atree__hash_u64(UINT64_C(0x70726564) ^ p->attr);
+    uint64_t sum = 0;
+    uint32_t i;
+    h = atree__hash_combine(h, ((uint64_t)p->kind << 8) | p->op);
+    h = atree__hash_combine(h, (uint64_t)v->kind + UINT64_C(0x51ed270b));
+    switch (v->kind) {
+    case ATREE_V_UNDEFINED:
+        break;
+    case ATREE_V_BOOL:
+        h = atree__hash_combine(h, v->u.b ? 1 : 0);
+        break;
+    case ATREE_V_INT:
+        h = atree__hash_combine(h, (uint64_t)v->u.i);
+        break;
+    case ATREE_V_FLOAT:
+        h = atree__hash_combine(h, atree__double_bits(v->u.f));
+        break;
+    case ATREE_V_STRING:
+        h = atree__hash_combine(h, str_content_hash(strings, v->u.s));
+        break;
+    case ATREE_V_INT_LIST:
+        h = atree__hash_combine(h, v->u.il.len);
+        for (i = 0; i < v->u.il.len; i++) {
+            h = atree__hash_combine(h, (uint64_t)v->u.il.data[i]);
+        }
+        break;
+    case ATREE_V_STRING_LIST:
+        h = atree__hash_combine(h, v->u.sl.len);
+        for (i = 0; v->u.sl.data != NULL && i < v->u.sl.len; i++) {
+            sum += atree__hash_u64(str_content_hash(strings, v->u.sl.data[i]));
+        }
+        h = atree__hash_combine(h, sum);
+        break;
+    default:
+        break;
+    }
+    return h;
 }
 
 bool atree__pred_equal(const struct atree__pred *a, const struct atree__pred *b)

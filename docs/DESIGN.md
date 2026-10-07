@@ -26,8 +26,8 @@ and keeps the paper-to-code mapping (§9.2) and the performance rationale
 | `src/tree.c` | `atree_create` (config validation and defaults, attribute and string tables), `atree_destroy`, attribute queries, `atree_stats` (M1 subset). |
 | `src/lexer.[ch]` | Pull-based, allocation-free tokenizer. Tokens carry byte offsets and lengths; string tokens record the quoted span and are unescaped by the parser into its scratch buffer. Integers are range-checked without `strtoll`; floats use `strtod` and must be finite. Also hosts `atree__error_set*`. |
 | `src/parser.c` | Recursive descent for the DSL (`atree_expr_parse`). One-token lookahead plus a lexer-state copy for the two-word keywords (`not in`, `one of`, `is not null`, ...). `and`/`or` chains become one n-ary node; `xor`/`xnor` are binary and left-associative; `between` lowers to two comparisons; `literal in list_attr` lowers to `one of`. Nesting (parentheses and `not`) is bounded by `max_depth` as a recursion guard. Every failure path records a status, offset and message once (`fail`), and later steps become no-ops. |
-| `src/node.[h]` | 64-byte `struct atree__node` (kind, flags, level, hash, use_count, access_child, children, parents, pred slot, index slot) with a static size assertion; node and predicate slabs; the probe type for identity lookups. |
-| `src/identity.[ch]` | Paper's expression-to-node table H_en: open-addressing set of node ids keyed by structural hash; lookups compare the full structure (operator + sorted child ids, or the predicate), so a hash collision can never merge two subexpressions. |
+| `src/node.[h]` | 64-byte `struct atree__node` (kind, flags, 16-bit level, hash, access child, predicate slot, children, parents, and the three boundaries that split the parent list into anchored/waker regions) with a static size assertion; node and predicate slabs; the probe type for identity lookups. |
+| `src/identity.[ch]` | Paper's expression-to-node table H_en: open-addressing set of node ids keyed by structural hash; lookups compare the full structure (operator + sorted child ids, or the predicate), so a hash collision can never merge two subexpressions. A second set of the same shape, the content table, files inner nodes under their flat content hash for the lookup-first insert. |
 | `src/tree.c` | Lifecycle, attributes, stats, and index construction: `build()` recurses over the normalized expression, reorganizes each operand set against existing nodes (Alg. 2), reuses nodes found in the identity table or creates and links them (Alg. 1/4), then self-adjusts existing parents to reuse the new node (Alg. 3) with relevel and identity re-keying; subscriptions attach to the root node (`use_count` = parents + subscriptions); `cascade()` is the iterative Alg. 5 deletion; every change is journaled so a failed insert rolls back exactly; `atree_validate` checks every invariant. |
 | `src/index.[ch]` | Per-attribute phase-1 indexes: bool true/false lists, equality and membership hash buckets (a membership leaf sits in one bucket per element), sorted ray arrays for range comparisons probed as prefix/suffix, an `is null` list seeded only when the attribute is undefined, and a scan list for negated and list-containment forms. O(1) removal from lists via a per-node position array; buckets and rays are found by key. |
 | `src/search.c` | Report object (per-thread scratch: two bitsets, one queue per level, match list, counters) and Alg. 6 matching with zero suppression and propagation on demand; reset walks the level queues (dirty list) instead of clearing bitsets. Conveniences: callback delivery, exists, allow-list filtering. |
@@ -117,15 +117,41 @@ unescaped strings) is balanced per call. The libFuzzer harness in
 
 ## The DAG (M4)
 
-**Identity.** A leaf's identity is its normalized predicate (string ids
-interned at insert); an inner node's identity is (operator, sorted unique
-child ids). Both are hashed and then compared structurally. Commutativity
+**Identity.** A leaf's identity is its normalized predicate, hashed by
+content (string literals by their bytes, lists order-free) so that an
+unresolved expression leaf hashes to the same value without touching the
+string table; an inner node's identity is (operator, sorted unique child
+ids). Both are hashed and then compared structurally. Commutativity
 and associativity are therefore free: `a and b` and `b and a` are one node,
 and `(a and b) and c` is `AND(a, b, c)` after flattening.
 
-**Use counts and sharing.** `use_count` is the number of parent links plus
-attached subscription ids. Inserting an expression that already exists
-attaches the id to the existing root (paper Alg. 4 line 3). Deleting
+**Use counts and sharing.** The paper's `useCount` is the number of parent
+links plus attached subscription ids; it is derived (`parents.len`, the
+HAS_SUBS flag) rather than stored. Inserting an expression that already
+exists attaches the id to the existing root (paper Alg. 4 line 3).
+
+**Lookup first (Alg. 4 lines 1-4).** Before building anything, insert
+hashes every subexpression of the normalized copy from its own text
+(`prehash`): a leaf by its content hash, resolved through the identity
+table in one probe without allocation or interning, and an inner node by
+its *flat content*, the operator plus the multiset of its members where a
+member of the same operator contributes its own members, so
+`AND(AND(a,b),c)` and `AND(a,b,c)` hash alike. Inner nodes are filed under
+that key in the content table (`t->content`, with the member sum per node
+in `t->csum`); a rewire by self-adjust replaces children with a same-operator
+node and therefore never changes a key. `build_inner` first looks its
+subexpression up there and verifies a hit by collecting the node's flat
+members and the operands' nodes (resolved recursively the same way) and
+comparing the two sorted sets; on a hit it returns without visiting the
+operands, as the paper's insert does, and reorganize runs only for nodes
+that are actually new. The expression's resolution state is cached on the
+normalized copy so nothing is looked up twice.
+
+**Normalization.** The normalized copy is bump-allocated from one arena
+(nodes, child arrays, lists and string bytes) and released together; the
+only per-insert allocations are the arena chunks. Normalizing used to make
+one allocation per node and per literal and was the largest cost of
+inserting a 50-predicate expression. Deleting
 detaches the id and cascades over children whose count reaches zero
 (Alg. 5), iteratively, with a worklist reserved up front so deletion cannot
 fail once it starts mutating.
@@ -159,7 +185,8 @@ array. Candidates come from *anchor lists*: every inner node designates
 one child as its anchor (the child with the fewest parents when the node
 was built, re-chosen on rewire), each node keeps the parents it anchors at
 the front of its parent list (`parents[0, nanchor)`), and the per-edge
-position entries carry the anchor flag in their high bit. A cover S ⊆ U
+position entries carry the anchor flag in their high bit (see *Edges and
+hot leaves* for the full region layout). A cover S ⊆ U
 contains its own anchor, so scanning only the anchored parents of U's
 members finds every cover while never walking the parent list of a
 popular leaf, which is rarely anybody's anchor because it was already
@@ -200,8 +227,23 @@ rewire and rollback can re-choose anchors without new failure paths. On
 100k expressions insert throughput went from 34k/s to 48k/s (ordering) to
 104k/s (anchors), within 5% of running with reorganize and self-adjust
 disabled, and the index has slightly fewer edges because the scan no longer
-hits its cap. `atree_validate` checks that the anchored prefix and the
-flags agree and that every inner node has exactly one anchor edge.
+hits its cap.
+
+The parent list is split a second way for matching. A parent *wakes* this
+node when it is an OR node, an AND node whose access child is this node, or
+any AND node when propagation on demand is off; the others would only be
+read and skipped when the node is true. The list therefore has four
+regions, `[0, end_aw)` anchored wakers, `[end_aw, end_a)` anchored
+non-wakers, `[end_a, end_w)` non-anchored wakers and the rest, so
+reorganize reads `[0, end_a)` and the search sweep reads `[0, end_aw)` and
+`[end_a, end_w)`, never touching an AND parent it cannot wake (for a
+popular leaf, most of them). Moving an edge between regions is at most
+three swaps across the boundaries plus position fix-ups, allocation free,
+and happens when an edge is linked or unlinked, when an anchor is
+re-chosen, and when an AND node's access child changes
+(`set_access_child`). `atree_validate` checks that every edge sits in the
+region its anchor flag and waker status call for and that every inner node
+has exactly one anchor edge.
 
 **Journal.** Every insert records what it changed: created nodes, rewired
 parents (with their old child set, hash, level and access child) and level

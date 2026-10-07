@@ -45,8 +45,12 @@ struct atree__rawstr {
     uint32_t len;
 };
 
+struct atree__arena;
+
 struct atree_expr {
-    struct atree__mem mem; /* owns children[], pred int list, strs[] and their bytes */
+    struct atree__mem mem;      /* owns children[], pred int list, strs[] and their bytes */
+    struct atree__arena *arena; /* normalized trees: every node and operand lives in
+                                   one arena owned by the root; NULL for built nodes */
     const atree_t *tree;
     uint8_t kind;   /* enum atree__expr_kind */
     uint32_t depth; /* 1 for leaves and constants */
@@ -57,6 +61,14 @@ struct atree_expr {
                                    u.s unused, u.sl.data == NULL, u.sl.len == nstrs */
     struct atree__rawstr *strs; /* string literal(s), sorted bytewise, unique */
     uint32_t nstrs;
+    /* Insert-time lookup state (tree.c, Alg. 4 lines 1-4), set on the
+     * normalized copy only: the flat content hash matching the tree's
+     * content table, whether it could be computed (every string literal is
+     * known to the tree), and the node this subexpression resolved to. */
+    uint64_t chash;
+    uint32_t resolved;    /* node id when lookup_state == 1 */
+    uint8_t lookup_state; /* 0 not tried, 1 found, 2 absent */
+    uint8_t chash_ok;
 };
 
 /* ---- construction (used by the public builders, the parser and tests) --- */
@@ -86,6 +98,9 @@ atree_status_t atree__expr_new_nary(enum atree__expr_kind kind, atree_expr_t **c
  * only), PRED, AND and OR, with n-ary flattened connectives whose children
  * are canonically ordered and unique. Fails with ATREE_ERR_TOO_DEEP when
  * e->depth > max_depth. */
+/* The result is a self-contained tree allocated from a single arena: free it
+ * with atree_expr_free on its root only (children are not individually
+ * freeable). */
 atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, atree_expr_t **out);
 
 /* Structural identity. Children are compared in stored order (canonical
@@ -103,6 +118,14 @@ int atree__expr_cmp(const atree_expr_t *a, const atree_expr_t *b);
 atree_status_t atree__expr_pred_lookup(const atree_expr_t *e, struct atree__mem *m,
                                        const struct atree__strtab *strings, struct atree__pred *out,
                                        uint32_t *dropped);
+
+/* atree__pred_content_hash of a PRED leaf computed from its raw literals:
+ * no string table access, no allocation. */
+uint64_t atree__expr_leaf_hash(const atree_expr_t *e);
+/* Whether a PRED leaf denotes exactly the resolved predicate p (string
+ * literals compared by bytes through the string table). */
+bool atree__expr_leaf_equals(const atree_expr_t *e, const struct atree__pred *p,
+                             const struct atree__strtab *strings);
 
 /* Same, but interns the literals (write path, M4). */
 atree_status_t atree__expr_pred_intern(const atree_expr_t *e, struct atree__mem *m,

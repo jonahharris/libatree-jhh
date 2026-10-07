@@ -198,16 +198,18 @@ correspondingly faster.
 
 | Configuration | search p50 | search p99 | nodes visited / event | predicates evaluated / event |
 |---|---|---|---|---|
-| all optimizations on | 1.15 ms | 2.06 ms | 4 499 | 3 322 |
-| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 2.87 ms | 3.95 ms | 4 499 | 233 770 |
-| everything off (flags 15) | 3.54 ms | 5.21 ms | 9 632 | 233 770 |
-| all on, 5 pairs per event | 0.22 ms | 0.76 ms | 1 185 | 853 |
+| all optimizations on | 0.84 ms | 1.51 ms | 4 497 | 3 322 |
+| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 1.10 ms | 1.90 ms | 9 226 | 3 322 |
+| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 2.66 ms | 3.51 ms | 4 497 | 233 770 |
+| everything off (flags 15) | 2.95 ms | 4.08 ms | 9 632 | 233 770 |
+| all on, 5 pairs per event | 0.17 ms | 0.62 ms | 1 184 | 853 |
 
-Index size for the 100 000 expressions: 409 792 nodes, 582 571 edges, about
-870 bytes per expression (reorganize and self-adjust removed about 48 000
-edges). Inserts run at 103 000 expressions/s with all optimizations on and
-109 000/s with reorganize and self-adjust disabled: the candidate search
-for shared subexpressions uses anchor lists and costs about 5%. Deletes
+Index size for the 100 000 expressions: 409 790 nodes, 582 566 edges, about
+930 bytes per expression (reorganize and self-adjust removed about 48 000
+edges). Inserts run at 127 000 expressions/s with all optimizations on and
+138 000/s with reorganize and self-adjust disabled; an insert looks each
+subexpression up before building it, so a repeated subexpression costs one
+probe, and the candidate search for new nodes uses anchor lists. Deletes
 exceed 350 000/s.
 
 **Against the Rust `a-tree` crate**, on identical datasets in the dialect
@@ -217,13 +219,14 @@ p50) in a fifth of the memory, because the crate evaluates every predicate
 per event while libatree probes per-attribute indexes. **Against the
 paper's Table 4** (1.39M real expressions: 1.6 ms, 2.9 s construction,
 205 MB) libatree at 1M synthetic expressions matches a far denser workload
-in 15.8 ms p50, constructs in 12.4 s (80 600 expressions/s, parsing timed
-separately) and uses about 665 bytes per expression. On a profile with the
+in 12.8 ms p50, constructs in 10.4 s (96 000 expressions/s, parsing timed
+separately) and uses about 724 bytes per expression. On a profile with the
 paper's predicate sharing (`bench_synthetic --ads`: 1.39M expressions, 54
-predicates each, every predicate shared 83 times) construction takes 138 s,
-because `build()` visits every subexpression where the paper's Alg. 4
-returns in O(1) on an identity hit. Details, caveats and reproduction
-commands are in `docs/COMPARISON.md`.
+predicates each, every predicate shared 83 times) construction takes 76 s;
+the remaining gap to the paper's 2.9 s is the greedy reorganize and
+self-adjust work on the nodes that are new, plus a workload that shares
+far less at the inner levels. Details, caveats and reproduction commands
+are in `docs/COMPARISON.md`.
 
 Work counters, not timings, are the regression gates (`tests/test_perf.c`
 and `make bench-check` against `bench/baseline.json`): zero suppression

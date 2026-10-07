@@ -70,6 +70,11 @@ void atree__pred_negate(struct atree__pred *p);
 atree_tri_t atree__pred_eval(const struct atree__pred *p, const struct atree__value *v);
 
 uint64_t atree__pred_hash(const struct atree__pred *p);
+/* Hash over the predicate's content with string literals hashed by their
+ * bytes (lists order-free), so an unresolved expression leaf hashes to the
+ * same value (atree__expr_leaf_hash) without touching the string table. */
+struct atree__strtab;
+uint64_t atree__pred_content_hash(const struct atree__pred *p, const struct atree__strtab *strings);
 bool atree__pred_equal(const struct atree__pred *a, const struct atree__pred *b);
 
 /* Estimated evaluation cost (PLAN §4.9): 1 for constant-time kinds,

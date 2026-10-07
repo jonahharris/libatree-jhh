@@ -34,11 +34,17 @@ static atree_expr_t *node_new(const atree_t *tree, enum atree__expr_kind kind)
     return e;
 }
 
+static void arena_free(struct atree__arena *a);
+
 void atree_expr_free(atree_expr_t *e)
 {
     struct atree__mem mem;
     uint32_t i;
     if (e == NULL) {
+        return;
+    }
+    if (e->arena != NULL) {
+        arena_free(e->arena); /* the whole normalized tree at once */
         return;
     }
     for (i = 0; i < e->nchildren; i++) {
@@ -629,200 +635,281 @@ atree_expr_t *atree_expr_xnor(atree_expr_t *a, atree_expr_t *b)
 
 /* ---- normalization (paper §5.2.1 zero suppression filter, PLAN §4.3) ---- */
 
-/* Copies a leaf, negating it when neg is set. */
-static atree_status_t norm_pred(const atree_expr_t *e, bool neg, atree_expr_t **out)
-{
-    struct atree__pred p = e->pred;
-    const char **strs = NULL;
-    size_t *lens = NULL;
-    struct atree__mem tmp;
-    atree_status_t st;
-    uint32_t i;
+/* The normalized copy of an expression is short-lived (one insert) and
+ * built bottom-up, so every node, child array, list and string literal is
+ * bump-allocated from one arena and released together. This removes the
+ * per-leaf allocations that otherwise dominate the insert of a large
+ * expression. Discarded intermediates (flattened connectives, duplicate
+ * operands, folded constants) are simply left in the arena. */
 
-    if (neg) {
-        atree__pred_negate(&p);
+#define ARENA_ALIGN ((size_t)16)
+#define ARENA_CHUNK ((size_t)4096)
+
+struct arena_chunk {
+    struct arena_chunk *next;
+    size_t size; /* bytes of the whole chunk, header included */
+};
+
+struct atree__arena {
+    struct atree__mem mem;
+    struct arena_chunk *head;
+    size_t used; /* bytes handed out from head, header included */
+};
+
+static size_t round_align(size_t n)
+{
+    return (n + ARENA_ALIGN - 1) / ARENA_ALIGN * ARENA_ALIGN;
+}
+
+static void *arena_alloc(struct atree__arena *a, size_t size)
+{
+    size_t need = round_align(size);
+    size_t hdr = round_align(sizeof(struct arena_chunk));
+    char *p;
+    if (size == 0) {
+        size = 1;
+        need = ARENA_ALIGN;
     }
-    atree__mem_init(&tmp, &e->tree->mem.a);
+    if (a->head == NULL || a->used + need > a->head->size) {
+        size_t total;
+        struct arena_chunk *c;
+        if (atree__add_overflows(hdr, need, &total)) {
+            return NULL;
+        }
+        if (total < ARENA_CHUNK) {
+            total = ARENA_CHUNK;
+        }
+        c = atree__alloc(&a->mem, total);
+        if (c == NULL) {
+            return NULL;
+        }
+        c->next = a->head;
+        c->size = total;
+        a->head = c;
+        a->used = hdr;
+    }
+    p = (char *)a->head + a->used;
+    a->used += need;
+    memset(p, 0, need);
+    return p;
+}
+
+static void arena_free(struct atree__arena *a)
+{
+    struct atree__mem mem = a->mem;
+    struct arena_chunk *c = a->head;
+    while (c != NULL) {
+        struct arena_chunk *next = c->next;
+        atree__free(&mem, c, c->size);
+        c = next;
+    }
+    atree__free(&mem, a, sizeof *a);
+}
+
+static atree_status_t arena_new(const atree_t *tree, struct atree__arena **out)
+{
+    struct atree__mem mem;
+    struct atree__arena *a;
+    atree__mem_init(&mem, &tree->mem.a);
+    a = atree__zalloc(&mem, sizeof *a);
+    if (a == NULL) {
+        return ATREE_ERR_NOMEM;
+    }
+    a->mem = mem;
+    *out = a;
+    return ATREE_OK;
+}
+
+static atree_expr_t *norm_node(struct atree__arena *a, const atree_t *tree,
+                               enum atree__expr_kind kind)
+{
+    atree_expr_t *e = arena_alloc(a, sizeof *e);
+    if (e == NULL) {
+        return NULL;
+    }
+    e->arena = a;
+    e->tree = tree;
+    e->kind = (uint8_t)kind;
+    e->depth = 1;
+    e->pred.operand.kind = ATREE_V_UNDEFINED;
+    return e;
+}
+
+static atree_status_t norm_const(struct atree__arena *a, const atree_t *tree, bool value,
+                                 atree_expr_t **out)
+{
+    atree_expr_t *e = norm_node(a, tree, value ? ATREE_EXPR_TRUE : ATREE_EXPR_FALSE);
+    if (e == NULL) {
+        return ATREE_ERR_NOMEM;
+    }
+    e->hash = compute_hash(e);
+    *out = e;
+    return ATREE_OK;
+}
+
+/* Copies a leaf into the arena, negating it when neg is set. */
+static atree_status_t norm_pred(struct atree__arena *a, const atree_expr_t *e, bool neg,
+                                atree_expr_t **out)
+{
+    atree_expr_t *n = norm_node(a, e->tree, ATREE_EXPR_PRED);
+    uint32_t i;
+    if (n == NULL) {
+        return ATREE_ERR_NOMEM;
+    }
+    n->pred = e->pred;
+    if (n->pred.operand.kind == ATREE_V_INT_LIST && n->pred.operand.u.il.len > 0) {
+        size_t bytes = (size_t)n->pred.operand.u.il.len * sizeof(int64_t);
+        int64_t *data = arena_alloc(a, bytes);
+        if (data == NULL) {
+            return ATREE_ERR_NOMEM;
+        }
+        memcpy(data, e->pred.operand.u.il.data, bytes);
+        n->pred.operand.u.il.data = data;
+    }
     if (e->nstrs > 0) {
-        strs = atree__alloc_array(&tmp, e->nstrs, sizeof *strs);
-        lens = atree__alloc_array(&tmp, e->nstrs, sizeof *lens);
-        if (strs == NULL || lens == NULL) {
-            atree__free_array(&tmp, strs, e->nstrs, sizeof *strs);
-            atree__free_array(&tmp, lens, e->nstrs, sizeof *lens);
+        n->strs = arena_alloc(a, (size_t)e->nstrs * sizeof *n->strs);
+        if (n->strs == NULL) {
             return ATREE_ERR_NOMEM;
         }
         for (i = 0; i < e->nstrs; i++) {
-            strs[i] = e->strs[i].data;
-            lens[i] = e->strs[i].len;
+            char *d = arena_alloc(a, (size_t)e->strs[i].len + 1);
+            if (d == NULL) {
+                return ATREE_ERR_NOMEM;
+            }
+            memcpy(d, e->strs[i].data, (size_t)e->strs[i].len + 1);
+            n->strs[i].data = d;
+            n->strs[i].len = e->strs[i].len;
         }
+        n->nstrs = e->nstrs;
     }
-    st = atree__expr_new_pred(
-        e->tree, p.attr, (enum atree__pred_kind)p.kind, (atree_op_t)p.op,
-        (enum atree__vkind)p.operand.kind,
-        p.operand.kind == ATREE_V_INT || p.operand.kind == ATREE_V_FLOAT ? &p.operand : NULL,
-        p.operand.kind == ATREE_V_INT_LIST ? p.operand.u.il.data : NULL,
-        p.operand.kind == ATREE_V_INT_LIST ? p.operand.u.il.len : 0, (const char *const *)strs,
-        lens, e->nstrs, out);
-    atree__free_array(&tmp, strs, e->nstrs, sizeof *strs);
-    atree__free_array(&tmp, lens, e->nstrs, sizeof *lens);
-    return st;
+    if (neg) {
+        atree__pred_negate(&n->pred);
+        n->hash = compute_hash(n);
+    } else {
+        n->hash = e->hash;
+    }
+    *out = n;
+    return ATREE_OK;
 }
 
-static atree_status_t normalize_rec(const atree_expr_t *e, bool neg, atree_expr_t **out);
+static atree_status_t normalize_rec(struct atree__arena *a, const atree_expr_t *e, bool neg,
+                                    atree_expr_t **out);
 
 /* Combines already-normalized operands under AND/OR: flattens same-kind
  * children, folds constants, sorts canonically, drops duplicates, collapses
- * a single child. Consumes the operands (also on failure). */
-static atree_status_t combine(const atree_t *tree, enum atree__expr_kind kind,
-                              struct exprvec *parts, atree_expr_t **out)
+ * a single child. */
+static atree_status_t combine(struct atree__arena *a, const atree_t *tree,
+                              enum atree__expr_kind kind, atree_expr_t **parts, uint32_t nparts,
+                              atree_expr_t **out)
 {
-    struct atree__mem tmp;
-    struct exprvec flat;
-    atree_status_t st = ATREE_OK;
-    uint32_t i;
-    uint32_t m;
     enum atree__expr_kind absorbing = kind == ATREE_EXPR_AND ? ATREE_EXPR_FALSE : ATREE_EXPR_TRUE;
     enum atree__expr_kind neutral = kind == ATREE_EXPR_AND ? ATREE_EXPR_TRUE : ATREE_EXPR_FALSE;
+    atree_expr_t **flat;
+    uint32_t cap = 0;
+    uint32_t n = 0;
+    uint32_t i;
+    uint32_t m;
+    uint32_t depth = 0;
+    atree_expr_t *node;
 
     *out = NULL;
-    atree__mem_init(&tmp, &tree->mem.a);
-    exprvec_init(&flat);
-
-    for (i = 0; i < parts->len && st == ATREE_OK; i++) {
-        atree_expr_t *c = parts->data[i];
-        parts->data[i] = NULL;
-        if (c->kind == absorbing) {
-            /* Everything collected so far is irrelevant. */
-            for (m = 0; m < flat.len; m++) {
-                atree_expr_free(flat.data[m]);
-            }
-            flat.len = 0;
-            for (m = i + 1; m < parts->len; m++) {
-                atree_expr_free(parts->data[m]);
-                parts->data[m] = NULL;
-            }
-            exprvec_free(&tmp, &flat);
-            *out = c;
+    for (i = 0; i < nparts; i++) {
+        if (parts[i]->kind == absorbing) {
+            *out = parts[i];
             return ATREE_OK;
         }
+        cap += parts[i]->kind == kind ? parts[i]->nchildren : 1;
+    }
+    flat = arena_alloc(a, (size_t)(cap == 0 ? 1 : cap) * sizeof *flat);
+    if (flat == NULL) {
+        return ATREE_ERR_NOMEM;
+    }
+    for (i = 0; i < nparts; i++) {
+        atree_expr_t *c = parts[i];
         if (c->kind == neutral) {
-            atree_expr_free(c);
             continue;
         }
         if (c->kind == kind) {
-            /* Flatten: steal the grandchildren. */
-            for (m = 0; m < c->nchildren && st == ATREE_OK; m++) {
-                st = exprvec_push(&tmp, &flat, c->children[m]);
-                if (st == ATREE_OK) {
-                    c->children[m] = NULL;
-                }
-            }
-            /* Free c and any grandchildren that could not be moved. */
             for (m = 0; m < c->nchildren; m++) {
-                atree_expr_free(c->children[m]);
-                c->children[m] = NULL;
+                flat[n++] = c->children[m]; /* flatten: adopt the grandchildren */
             }
-            atree_expr_free(c);
-            continue;
-        }
-        st = exprvec_push(&tmp, &flat, c);
-        if (st != ATREE_OK) {
-            atree_expr_free(c);
+        } else {
+            flat[n++] = c;
         }
     }
-    for (; i < parts->len; i++) {
-        atree_expr_free(parts->data[i]);
-        parts->data[i] = NULL;
-    }
-    if (st != ATREE_OK) {
-        goto fail;
-    }
-
-    if (flat.len > 1) {
-        qsort(flat.data, flat.len, sizeof *flat.data, expr_qsort_cmp);
+    if (n > 1) {
+        qsort(flat, n, sizeof *flat, expr_qsort_cmp);
         m = 0;
-        for (i = 0; i < flat.len; i++) {
-            if (m > 0 && atree__expr_equal(flat.data[m - 1], flat.data[i])) {
-                atree_expr_free(flat.data[i]);
-            } else {
-                flat.data[m++] = flat.data[i];
+        for (i = 0; i < n; i++) {
+            if (m == 0 || !atree__expr_equal(flat[m - 1], flat[i])) {
+                flat[m++] = flat[i];
             }
         }
-        flat.len = m;
+        n = m;
     }
-
-    if (flat.len == 0) {
-        st = atree__expr_new_const(tree, neutral == ATREE_EXPR_TRUE, out);
-    } else if (flat.len == 1) {
-        *out = flat.data[0];
-        flat.len = 0;
-    } else {
-        /* new_nary takes ownership of the children array contents. */
-        st = atree__expr_new_nary(kind, flat.data, flat.len, out);
-        flat.len = 0; /* consumed either way */
+    if (n == 0) {
+        return norm_const(a, tree, neutral == ATREE_EXPR_TRUE, out);
     }
-    exprvec_free(&tmp, &flat);
-    return st;
-
-fail:
-    for (i = 0; i < flat.len; i++) {
-        atree_expr_free(flat.data[i]);
+    if (n == 1) {
+        *out = flat[0];
+        return ATREE_OK;
     }
-    exprvec_free(&tmp, &flat);
-    return st;
+    node = norm_node(a, tree, kind);
+    if (node == NULL) {
+        return ATREE_ERR_NOMEM;
+    }
+    node->children = flat;
+    node->nchildren = n;
+    for (i = 0; i < n; i++) {
+        if (flat[i]->depth > depth) {
+            depth = flat[i]->depth;
+        }
+    }
+    node->depth = depth == UINT32_MAX ? UINT32_MAX : depth + 1;
+    node->hash = compute_hash(node);
+    *out = node;
+    return ATREE_OK;
 }
 
 /* Normalizes each part with its own negation flag, then combines. */
-static atree_status_t norm_nary(const atree_t *tree, enum atree__expr_kind kind,
-                                const atree_expr_t *const *srcs, const bool *negs, uint32_t n,
-                                atree_expr_t **out)
+static atree_status_t norm_nary(struct atree__arena *a, const atree_t *tree,
+                                enum atree__expr_kind kind, const atree_expr_t *const *srcs,
+                                const bool *negs, uint32_t n, atree_expr_t **out)
 {
-    struct atree__mem tmp;
-    struct exprvec parts;
+    atree_expr_t **parts;
     atree_status_t st = ATREE_OK;
     uint32_t i;
 
     *out = NULL;
-    atree__mem_init(&tmp, &tree->mem.a);
-    exprvec_init(&parts);
-    st = exprvec_reserve(&tmp, &parts, n);
+    parts = arena_alloc(a, (size_t)(n == 0 ? 1 : n) * sizeof *parts);
+    if (parts == NULL) {
+        return ATREE_ERR_NOMEM;
+    }
     for (i = 0; st == ATREE_OK && i < n; i++) {
-        atree_expr_t *c = NULL;
-        st = normalize_rec(srcs[i], negs[i], &c);
-        if (st == ATREE_OK) {
-            st = exprvec_push(&tmp, &parts, c);
-            if (st != ATREE_OK) {
-                atree_expr_free(c);
-            }
-        }
+        st = normalize_rec(a, srcs[i], negs[i], &parts[i]);
     }
-    if (st == ATREE_OK) {
-        st = combine(tree, kind, &parts, out);
-    } else {
-        for (i = 0; i < parts.len; i++) {
-            atree_expr_free(parts.data[i]);
-        }
+    if (st != ATREE_OK) {
+        return st;
     }
-    exprvec_free(&tmp, &parts);
-    return st;
+    return combine(a, tree, kind, parts, n, out);
 }
 
-static atree_status_t normalize_rec(const atree_expr_t *e, bool neg, atree_expr_t **out)
+static atree_status_t normalize_rec(struct atree__arena *a, const atree_expr_t *e, bool neg,
+                                    atree_expr_t **out)
 {
     const atree_t *tree = e->tree;
-    struct atree__mem tmp;
     atree_status_t st;
 
     *out = NULL;
     switch ((enum atree__expr_kind)e->kind) {
     case ATREE_EXPR_TRUE:
-        return atree__expr_new_const(tree, !neg, out);
+        return norm_const(a, tree, !neg, out);
     case ATREE_EXPR_FALSE:
-        return atree__expr_new_const(tree, neg, out);
+        return norm_const(a, tree, neg, out);
     case ATREE_EXPR_PRED:
-        return norm_pred(e, neg, out);
+        return norm_pred(a, e, neg, out);
     case ATREE_EXPR_NOT:
-        return normalize_rec(e->children[0], !neg, out);
+        return normalize_rec(a, e->children[0], !neg, out);
 
     case ATREE_EXPR_AND:
     case ATREE_EXPR_OR: {
@@ -833,17 +920,15 @@ static atree_status_t normalize_rec(const atree_expr_t *e, bool neg, atree_expr_
         if (neg) {
             k = k == ATREE_EXPR_AND ? ATREE_EXPR_OR : ATREE_EXPR_AND;
         }
-        atree__mem_init(&tmp, &tree->mem.a);
-        negs = atree__alloc_array(&tmp, e->nchildren, sizeof *negs);
+        negs = arena_alloc(a, (size_t)(e->nchildren == 0 ? 1 : e->nchildren) * sizeof *negs);
         if (negs == NULL) {
             return ATREE_ERR_NOMEM;
         }
         for (i = 0; i < e->nchildren; i++) {
             negs[i] = neg;
         }
-        st = norm_nary(tree, k, (const atree_expr_t *const *)e->children, negs, e->nchildren, out);
-        atree__free_array(&tmp, negs, e->nchildren, sizeof *negs);
-        return st;
+        return norm_nary(a, tree, k, (const atree_expr_t *const *)e->children, negs, e->nchildren,
+                         out);
     }
 
     case ATREE_EXPR_XOR:
@@ -854,9 +939,7 @@ static atree_status_t normalize_rec(const atree_expr_t *e, bool neg, atree_expr_
         const atree_expr_t *ab[2];
         bool n1[2];
         bool n2[2];
-        atree_expr_t *t1 = NULL;
-        atree_expr_t *t2 = NULL;
-        struct exprvec parts;
+        atree_expr_t *parts[2];
 
         ab[0] = e->children[0];
         ab[1] = e->children[1];
@@ -864,29 +947,15 @@ static atree_status_t normalize_rec(const atree_expr_t *e, bool neg, atree_expr_
         n1[1] = !xnor;
         n2[0] = true;
         n2[1] = xnor;
-        st = norm_nary(tree, ATREE_EXPR_AND, ab, n1, 2, &t1);
+        st = norm_nary(a, tree, ATREE_EXPR_AND, ab, n1, 2, &parts[0]);
         if (st != ATREE_OK) {
             return st;
         }
-        st = norm_nary(tree, ATREE_EXPR_AND, ab, n2, 2, &t2);
+        st = norm_nary(a, tree, ATREE_EXPR_AND, ab, n2, 2, &parts[1]);
         if (st != ATREE_OK) {
-            atree_expr_free(t1);
             return st;
         }
-        atree__mem_init(&tmp, &tree->mem.a);
-        exprvec_init(&parts);
-        st = exprvec_reserve(&tmp, &parts, 2);
-        if (st != ATREE_OK) {
-            atree_expr_free(t1);
-            atree_expr_free(t2);
-            return st;
-        }
-        parts.data[0] = t1;
-        parts.data[1] = t2;
-        parts.len = 2;
-        st = combine(tree, ATREE_EXPR_OR, &parts, out);
-        exprvec_free(&tmp, &parts);
-        return st;
+        return combine(a, tree, ATREE_EXPR_OR, parts, 2, out);
     }
 
     default:
@@ -896,6 +965,9 @@ static atree_status_t normalize_rec(const atree_expr_t *e, bool neg, atree_expr_
 
 atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, atree_expr_t **out)
 {
+    struct atree__arena *a;
+    atree_expr_t *root = NULL;
+    atree_status_t st;
     if (e == NULL || out == NULL) {
         return ATREE_ERR_INVALID_ARG;
     }
@@ -903,7 +975,22 @@ atree_status_t atree__expr_normalize(const atree_expr_t *e, size_t max_depth, at
     if (e->depth > max_depth) {
         return ATREE_ERR_TOO_DEEP;
     }
-    return normalize_rec(e, false, out);
+    st = arena_new(e->tree, &a);
+    if (st != ATREE_OK) {
+        return st;
+    }
+    st = normalize_rec(a, e, false, &root);
+    if (st != ATREE_OK) {
+        arena_free(a);
+        return st;
+    }
+    if (root->arena == NULL) {
+        /* cannot happen: every normalized node is arena-allocated */
+        arena_free(a);
+        return ATREE_ERR_INVALID_ARG;
+    }
+    *out = root;
+    return ATREE_OK;
 }
 
 /* ---- resolving string literals ------------------------------------------ */
@@ -1023,6 +1110,116 @@ atree_status_t atree__expr_pred_intern(const atree_expr_t *e, struct atree__mem 
         return ATREE_ERR_INVALID_ARG;
     }
     return resolve(e, m, strings, strings, out, &d);
+}
+
+uint64_t atree__expr_leaf_hash(const atree_expr_t *e)
+{
+    const struct atree__pred *p = &e->pred;
+    const struct atree__value *v = &p->operand;
+    uint64_t h = atree__hash_u64(UINT64_C(0x70726564) ^ p->attr);
+    uint64_t sum = 0;
+    uint32_t i;
+    h = atree__hash_combine(h, ((uint64_t)p->kind << 8) | p->op);
+    h = atree__hash_combine(h, (uint64_t)v->kind + UINT64_C(0x51ed270b));
+    switch (v->kind) {
+    case ATREE_V_UNDEFINED:
+        break;
+    case ATREE_V_BOOL:
+        h = atree__hash_combine(h, v->u.b ? 1 : 0);
+        break;
+    case ATREE_V_INT:
+        h = atree__hash_combine(h, (uint64_t)v->u.i);
+        break;
+    case ATREE_V_FLOAT:
+        h = atree__hash_combine(h, atree__double_bits(v->u.f));
+        break;
+    case ATREE_V_STRING:
+        h = atree__hash_combine(h,
+                                e->nstrs > 0 ? atree__hash_bytes(e->strs[0].data, e->strs[0].len)
+                                             : atree__hash_bytes(NULL, 0));
+        break;
+    case ATREE_V_INT_LIST:
+        h = atree__hash_combine(h, v->u.il.len);
+        for (i = 0; i < v->u.il.len; i++) {
+            h = atree__hash_combine(h, (uint64_t)v->u.il.data[i]);
+        }
+        break;
+    case ATREE_V_STRING_LIST:
+        h = atree__hash_combine(h, e->nstrs);
+        for (i = 0; i < e->nstrs; i++) {
+            sum += atree__hash_u64(atree__hash_bytes(e->strs[i].data, e->strs[i].len));
+        }
+        h = atree__hash_combine(h, sum);
+        break;
+    default:
+        break;
+    }
+    return h;
+}
+
+/* Position of the string with these bytes in e->strs (sorted bytewise,
+ * unique), or UINT32_MAX. */
+static uint32_t find_raw(const atree_expr_t *e, const char *s, uint32_t len)
+{
+    uint32_t lo = 0;
+    uint32_t hi = e->nstrs;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        const struct atree__rawstr *r = &e->strs[mid];
+        uint32_t n = r->len < len ? r->len : len;
+        int c = n == 0 ? 0 : memcmp(r->data, s, n);
+        if (c == 0) {
+            c = (r->len > len) - (r->len < len);
+        }
+        if (c == 0) {
+            return mid;
+        }
+        if (c < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return UINT32_MAX;
+}
+
+bool atree__expr_leaf_equals(const atree_expr_t *e, const struct atree__pred *p,
+                             const struct atree__strtab *strings)
+{
+    const struct atree__value *a = &e->pred.operand;
+    const struct atree__value *b = &p->operand;
+    uint32_t i;
+    if (e->kind != ATREE_EXPR_PRED || e->pred.attr != p->attr || e->pred.kind != p->kind ||
+        e->pred.op != p->op || a->kind != b->kind) {
+        return false;
+    }
+    switch (b->kind) {
+    case ATREE_V_STRING: {
+        uint32_t len = 0;
+        const char *s = atree__strtab_get(strings, b->u.s, &len);
+        return s != NULL && e->nstrs == 1 && e->strs[0].len == len &&
+            (len == 0 || memcmp(e->strs[0].data, s, len) == 0);
+    }
+    case ATREE_V_STRING_LIST:
+        if (b->u.sl.len != e->nstrs) {
+            return false;
+        }
+        for (i = 0; i < b->u.sl.len; i++) {
+            uint32_t len = 0;
+            const char *s = atree__strtab_get(strings, b->u.sl.data[i], &len);
+            if (s == NULL || find_raw(e, s, len) == UINT32_MAX) {
+                return false;
+            }
+        }
+        return true; /* both sides unique and equal in size: a bijection */
+    case ATREE_V_UNDEFINED:
+    case ATREE_V_BOOL:
+    case ATREE_V_INT:
+    case ATREE_V_FLOAT:
+    case ATREE_V_INT_LIST:
+    default:
+        return atree__value_equal(a, b);
+    }
 }
 
 const char *atree__expr_str_resolver(const void *ctx, uint32_t ref, uint32_t *len)

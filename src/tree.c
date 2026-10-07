@@ -75,8 +75,11 @@ static void free_dag(atree_t *t)
         atree__pred_free(&t->mem, &t->preds.data[i]); /* no-op for recycled slots */
     }
     atree__predvec_free(&t->mem, &t->preds);
+    atree__u32vec_free(&t->mem, &t->leaf_pos);
     atree__u32vec_free(&t->mem, &t->free_preds);
     atree__idset_free(t);
+    atree__cset_free(t);
+    atree__u64vec_free(&t->mem, &t->csum);
     atree__index_free(t);
     atree__u32vec_free(&t->mem, &t->leaves);
     atree__u32vec_free(&t->mem, &t->level_counts);
@@ -89,6 +92,7 @@ static void free_dag(atree_t *t)
     atree__u32vec_free(&t->mem, &t->free_sublists);
     atree__u64vec_free(&t->mem, &t->always);
     atree__u32vec_free(&t->mem, &t->worklist);
+    atree__u32vec_free(&t->mem, &t->scratch);
     atree__u32vec_free(&t->mem, &t->mark);
 }
 
@@ -133,8 +137,11 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     atree__nodevec_init(&t->nodes);
     atree__u32vec_init(&t->free_nodes);
     atree__predvec_init(&t->preds);
+    atree__u32vec_init(&t->leaf_pos);
     atree__u32vec_init(&t->free_preds);
     atree__idset_init(&t->identity);
+    atree__idset_init(&t->content);
+    atree__u64vec_init(&t->csum);
     atree__u32vec_init(&t->leaves);
     atree__u32vec_init(&t->level_counts);
     atree__u64map_init(&t->subs);
@@ -143,6 +150,7 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     atree__u32vec_init(&t->free_sublists);
     atree__u64vec_init(&t->always);
     atree__u32vec_init(&t->worklist);
+    atree__u32vec_init(&t->scratch);
     atree__u32vec_init(&t->mark);
     t->mark_epoch = 0;
     memset(&t->index, 0, sizeof t->index);
@@ -239,7 +247,6 @@ static atree_status_t node_alloc(atree_t *t, atree__nid *out)
     n.kind = ATREE_NODE_FREE;
     n.access_child = ATREE_NID_NONE;
     n.pred = UINT32_MAX;
-    n.index_slot = UINT32_MAX;
     atree__u32vec_init(&n.children);
     atree__u32vec_init(&n.parents);
     if (t->free_nodes.len > 0) {
@@ -253,6 +260,11 @@ static atree_status_t node_alloc(atree_t *t, atree__nid *out)
     {
         atree_status_t st = atree__nodevec_push(&t->mem, &t->nodes, n);
         if (st != ATREE_OK) {
+            return st;
+        }
+        st = atree__u64vec_push(&t->mem, &t->csum, 0);
+        if (st != ATREE_OK) {
+            t->nodes.len--;
             return st;
         }
     }
@@ -362,6 +374,37 @@ static bool edge_anchored(uint32_t e)
     return (e & EDGE_ANCHOR) != 0;
 }
 
+/* A node is alive while a parent or a subscription uses it (the paper's
+ * useCount, derived rather than stored). */
+static bool in_use(const struct atree__node *n)
+{
+    return n->parents.len > 0 || (n->flags & ATREE_NODE_HAS_SUBS) != 0;
+}
+
+/* ---- parent-list regions (node.h) --------------------------------------- */
+
+/* Whether parent p wakes child c during matching (search.c, emit). */
+static bool is_waker(const struct atree__node *p, atree__nid c)
+{
+    return p->kind != ATREE_NODE_AND || p->access_child == ATREE_NID_NONE || p->access_child == c;
+}
+
+static uint32_t region_for(bool anchor, bool waker)
+{
+    return anchor ? (waker ? 0 : 1) : (waker ? 2 : 3);
+}
+
+static uint32_t region_of_index(const struct atree__node *cn, uint32_t k)
+{
+    return k < cn->end_aw ? 0 : k < cn->end_a ? 1 : k < cn->end_w ? 2 : 3;
+}
+
+/* The boundary between region r and region r + 1. */
+static uint32_t *region_end(struct atree__node *cn, uint32_t r)
+{
+    return r == 0 ? &cn->end_aw : r == 1 ? &cn->end_a : &cn->end_w;
+}
+
 /* Re-records, for the parent stored at cn->parents[idx], where it sits in
  * child c's list; the anchor flag follows the region. */
 static void fix_pos(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t idx)
@@ -369,7 +412,7 @@ static void fix_pos(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t i
     struct atree__node *pn = node_at(t, cn->parents.data[idx]);
     uint32_t j = child_index(pn, c);
     if (j != UINT32_MAX) {
-        child_pos(pn)[j] = idx | (idx < cn->nanchor ? EDGE_ANCHOR : 0);
+        child_pos(pn)[j] = idx | (idx < cn->end_a ? EDGE_ANCHOR : 0);
     }
 }
 
@@ -380,30 +423,46 @@ static void parents_swap(struct atree__node *cn, uint32_t a, uint32_t b)
     cn->parents.data[b] = tmp;
 }
 
-/* Moves the parent at index k (outside the anchored prefix) into it. */
-static void promote(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t k)
+/* Moves the parent at index k of c's list into region `target` by swapping
+ * it across the boundaries in between; returns its new index. Never
+ * allocates. */
+static uint32_t move_to_region(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t k,
+                               uint32_t target)
 {
-    uint32_t b = cn->nanchor;
-    parents_swap(cn, k, b);
-    cn->nanchor++;
+    uint32_t r = region_of_index(cn, k);
+    if (r == target) {
+        return k;
+    }
+    /* Each step swaps with the element at the boundary, which is fixed up
+     * at once; the moving element is fixed up once at the end. */
+    while (r > target) {
+        uint32_t *b = region_end(cn, r - 1);
+        uint32_t bi = *b; /* first index of region r */
+        (*b)++;
+        if (k != bi) {
+            parents_swap(cn, k, bi);
+            fix_pos(t, cn, c, k);
+        }
+        k = bi;
+        r--;
+    }
+    while (r < target) {
+        uint32_t *b = region_end(cn, r);
+        uint32_t bi = *b - 1; /* last index of region r */
+        (*b)--;
+        if (k != bi) {
+            parents_swap(cn, k, bi);
+            fix_pos(t, cn, c, k);
+        }
+        k = bi;
+        r++;
+    }
     fix_pos(t, cn, c, k);
-    fix_pos(t, cn, c, b);
-}
-
-/* Moves the parent at index k (inside the anchored prefix) out of it; it
- * ends up at index nanchor. */
-static void demote(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t k)
-{
-    uint32_t b;
-    cn->nanchor--;
-    b = cn->nanchor;
-    parents_swap(cn, k, b);
-    fix_pos(t, cn, c, k);
-    fix_pos(t, cn, c, b);
+    return k;
 }
 
 /* Makes `id` a parent of its i-th child (may allocate in the child's list). */
-static atree_status_t link_child(atree_t *t, atree__nid id, uint32_t i, bool anchor)
+static atree_status_t link_child(atree_t *t, atree__nid id, uint32_t i, bool anchor, bool waker)
 {
     struct atree__node *n = node_at(t, id);
     atree__nid c = n->children.data[i];
@@ -416,11 +475,8 @@ static atree_status_t link_child(atree_t *t, atree__nid id, uint32_t i, bool anc
     if (st != ATREE_OK) {
         return st;
     }
-    child_pos(n)[i] = cn->parents.len - 1;
-    if (anchor) {
-        promote(t, cn, c, cn->parents.len - 1);
-    }
-    cn->use_count++;
+    child_pos(n)[i] = cn->parents.len - 1; /* region 3 */
+    (void)move_to_region(t, cn, c, cn->parents.len - 1, region_for(anchor, waker));
     t->edges++;
     return ATREE_OK;
 }
@@ -432,21 +488,33 @@ static void unlink_child(atree_t *t, atree__nid id, uint32_t i)
     struct atree__node *n = node_at(t, id);
     atree__nid c = n->children.data[i];
     struct atree__node *cn = node_at(t, c);
-    uint32_t e = child_pos(n)[i];
-    uint32_t k = edge_pos(e);
-    uint32_t last;
-    if (edge_anchored(e)) {
-        demote(t, cn, c, k); /* now at index nanchor, outside the prefix */
-        k = cn->nanchor;
-    }
-    last = cn->parents.len - 1;
+    uint32_t k = move_to_region(t, cn, c, edge_pos(child_pos(n)[i]), 3);
+    uint32_t last = cn->parents.len - 1;
     if (k != last) {
         parents_swap(cn, k, last);
         fix_pos(t, cn, c, k);
     }
     cn->parents.len--;
-    cn->use_count--;
     t->edges--;
+}
+
+/* Puts `id`'s i-th edge in the region its anchor flag and waker status
+ * call for. Never allocates. */
+static void place_edge(atree_t *t, atree__nid id, uint32_t i)
+{
+    struct atree__node *n = node_at(t, id);
+    atree__nid c = n->children.data[i];
+    uint32_t e = child_pos(n)[i];
+    (void)move_to_region(t, node_at(t, c), c, edge_pos(e),
+                         region_for(edge_anchored(e), is_waker(n, c)));
+}
+
+static void place_all_edges(atree_t *t, atree__nid id)
+{
+    uint32_t i;
+    for (i = 0; i < node_at(t, id)->children.len; i++) {
+        place_edge(t, id, i);
+    }
 }
 
 /* Sets whether `id`'s i-th edge is the anchor edge. Never allocates. */
@@ -454,15 +522,28 @@ static void set_anchor(atree_t *t, atree__nid id, uint32_t i, bool anchor)
 {
     struct atree__node *n = node_at(t, id);
     atree__nid c = n->children.data[i];
-    struct atree__node *cn = node_at(t, c);
     uint32_t e = child_pos(n)[i];
-    if (edge_anchored(e) == anchor) {
+    if (edge_anchored(e) != anchor) {
+        (void)move_to_region(t, node_at(t, c), c, edge_pos(e), region_for(anchor, is_waker(n, c)));
+    }
+}
+
+/* Changes an AND node's access child and moves the old and new edges
+ * between waker regions. Never allocates. */
+static void set_access_child(atree_t *t, atree__nid id, atree__nid c)
+{
+    struct atree__node *n = node_at(t, id);
+    atree__nid old = n->access_child;
+    uint32_t j;
+    if (old == c) {
         return;
     }
-    if (anchor) {
-        promote(t, cn, c, edge_pos(e));
-    } else {
-        demote(t, cn, c, edge_pos(e));
+    n->access_child = c;
+    if (old != ATREE_NID_NONE && (j = child_index(n, old)) != UINT32_MAX) {
+        place_edge(t, id, j);
+    }
+    if (c != ATREE_NID_NONE && (j = child_index(n, c)) != UINT32_MAX) {
+        place_edge(t, id, j);
     }
 }
 
@@ -531,6 +612,11 @@ static atree_status_t pred_slot_alloc(atree_t *t, const struct atree__pred *p, u
         if (st != ATREE_OK) {
             return st;
         }
+        st = atree__u32vec_push(&t->mem, &t->leaf_pos, UINT32_MAX);
+        if (st != ATREE_OK) {
+            t->preds.len--;
+            return st;
+        }
     }
     *out = t->preds.len - 1;
     return ATREE_OK;
@@ -592,7 +678,6 @@ static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
     }
     n = node_at(t, nid);
     n->flags |= ATREE_NODE_HAS_SUBS;
-    n->use_count++;
     return ATREE_OK;
 }
 
@@ -613,7 +698,6 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
     }
     atree__u64vec_swap_remove(list, pos);
     n = node_at(t, nid);
-    n->use_count--;
     if (list->len == 0) {
         atree__u64vec_free(&t->mem, list);
         atree__u64map_remove(&t->node_subs, nid);
@@ -629,15 +713,15 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
 static void leaves_remove(atree_t *t, atree__nid id)
 {
     struct atree__node *n = node_at(t, id);
-    uint32_t pos = n->index_slot;
+    uint32_t pos = t->leaf_pos.data[n->pred];
     uint32_t last = t->leaves.len - 1;
     if (pos != last) {
         atree__nid moved = t->leaves.data[last];
         t->leaves.data[pos] = moved;
-        node_at(t, moved)->index_slot = pos;
+        t->leaf_pos.data[node_at(t, moved)->pred] = pos;
     }
     t->leaves.len--;
-    n->index_slot = UINT32_MAX;
+    t->leaf_pos.data[n->pred] = UINT32_MAX;
 }
 
 /* Frees `start` if nothing uses it, then every child left unused, and so
@@ -651,10 +735,13 @@ static void cascade(atree_t *t, atree__nid start)
         atree__nid id = t->worklist.data[--t->worklist.len];
         struct atree__node *n = node_at(t, id);
         uint32_t i;
-        if (n->kind == ATREE_NODE_FREE || n->use_count > 0) {
+        if (n->kind == ATREE_NODE_FREE || in_use(n)) {
             continue;
         }
         atree__idset_remove(t, n->hash, id);
+        if (n->kind != ATREE_NODE_LEAF) {
+            atree__cset_remove(t, atree__content_key(t, id), id);
+        }
         if (n->kind == ATREE_NODE_LEAF) {
             if (indexed(t)) {
                 atree__index_remove(t, id);
@@ -666,7 +753,7 @@ static void cascade(atree_t *t, atree__nid start)
             for (i = 0; i < n->children.len; i++) {
                 atree__nid c = n->children.data[i];
                 unlink_child(t, id, i);
-                if (node_at(t, c)->use_count == 0) {
+                if (!in_use(node_at(t, c))) {
                     t->worklist.data[t->worklist.len++] = c;
                 }
             }
@@ -794,12 +881,12 @@ static atree__nid choose_access_child(const atree_t *t, const uint32_t *ids, uin
 
 static void reset_access_child(atree_t *t, atree__nid id)
 {
-    struct atree__node *n = node_at(t, id);
+    const struct atree__node *n = &t->nodes.data[id];
+    atree__nid c = ATREE_NID_NONE;
     if (n->kind == ATREE_NODE_AND && (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) == 0) {
-        n->access_child = choose_access_child(t, n->children.data, n->children.len);
-    } else {
-        n->access_child = ATREE_NID_NONE;
+        c = choose_access_child(t, n->children.data, n->children.len);
     }
+    set_access_child(t, id, c);
 }
 
 /* Recomputes levels upward from `start` after its children changed (both
@@ -852,12 +939,16 @@ static atree_status_t relevel(atree_t *t, atree__nid start, struct journalvec *j
 
 /* Undo helper for a node whose construction failed part-way. */
 static void abort_new_node(atree_t *t, atree__nid id, uint32_t pred_slot, bool in_leaves,
-                           bool in_index, bool in_identity, bool in_levels, uint32_t linked)
+                           bool in_index, bool in_identity, bool in_content, bool in_levels,
+                           uint32_t linked)
 {
     struct atree__node *n = node_at(t, id);
     uint32_t i;
     if (in_levels) {
         level_dec(t, n->level);
+    }
+    if (in_content) {
+        atree__cset_remove(t, atree__content_key(t, id), id);
     }
     if (in_identity) {
         atree__idset_remove(t, n->hash, id);
@@ -879,11 +970,214 @@ static void abort_new_node(atree_t *t, atree__nid id, uint32_t pred_slot, bool i
     node_release(t, id);
 }
 
-static atree_status_t build(atree_t *t, const atree_expr_t *e, struct journalvec *j,
-                            atree__nid *out);
+/* ---- lookup first (Alg. 4 lines 1-4) ------------------------------------ */
 
-static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct journalvec *j,
-                                 atree__nid *out)
+enum { LOOKUP_NONE = 0, LOOKUP_FOUND = 1, LOOKUP_ABSENT = 2 };
+
+/* A node's key as a member of a flat set: leaves by predicate hash, inner
+ * nodes by content key. */
+static uint64_t member_key(const atree_t *t, atree__nid id)
+{
+    const struct atree__node *n = &t->nodes.data[id];
+    return n->kind == ATREE_NODE_LEAF ? n->hash : atree__content_key(t, id);
+}
+
+static uint64_t member_mix(uint64_t key)
+{
+    return atree__hash_u64(key ^ UINT64_C(0x6d656d62));
+}
+
+/* Sum over the flat members of an inner node with children `ids`: a child
+ * of the same operator contributes its own flat members (its sum), any
+ * other child contributes itself. Wrapping addition makes the sum
+ * order-free. */
+static uint64_t flat_sum(const atree_t *t, uint8_t kind, const uint32_t *ids, uint32_t n)
+{
+    uint64_t sum = 0;
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        const struct atree__node *c = &t->nodes.data[ids[i]];
+        sum += c->kind == kind ? t->csum.data[ids[i]] : member_mix(member_key(t, ids[i]));
+    }
+    return sum;
+}
+
+static uint8_t node_kind_of(const atree_expr_t *e)
+{
+    return e->kind == ATREE_EXPR_AND ? ATREE_NODE_AND : ATREE_NODE_OR;
+}
+
+static uint64_t content_key_of(uint8_t kind, uint64_t sum)
+{
+    uint64_t tag = kind == ATREE_NODE_AND ? UINT64_C(0xa11d) : UINT64_C(0x0e0e);
+    return atree__hash_combine(atree__hash_u64(tag), sum);
+}
+
+/* Computes the content hash of every subexpression of the normalized
+ * expression from its own text and resolves the leaves through the identity
+ * table: one probe per leaf, no allocation, no string interning (a literal
+ * the tree has never seen simply matches no leaf). */
+static atree_status_t prehash(atree_t *t, atree_expr_t *e)
+{
+    uint32_t i;
+    atree_status_t st;
+    e->lookup_state = LOOKUP_NONE;
+    e->chash_ok = 0;
+    if (e->kind == ATREE_EXPR_PRED) {
+        struct atree__probe probe;
+        atree__nid id;
+        probe.kind = ATREE_NODE_LEAF;
+        probe.hash = atree__expr_leaf_hash(e);
+        probe.pred = NULL;
+        probe.leaf = e;
+        probe.children = NULL;
+        probe.nchildren = 0;
+        id = atree__idset_find(t, &probe);
+        e->chash = probe.hash;
+        e->chash_ok = 1;
+        e->resolved = id;
+        e->lookup_state = id == ATREE_NID_NONE ? LOOKUP_ABSENT : LOOKUP_FOUND;
+        return ATREE_OK;
+    }
+    if (e->kind == ATREE_EXPR_AND || e->kind == ATREE_EXPR_OR) {
+        uint64_t sum = 0;
+        bool ok = true;
+        for (i = 0; i < e->nchildren; i++) {
+            st = prehash(t, e->children[i]);
+            if (st != ATREE_OK) {
+                return st;
+            }
+            ok = ok && e->children[i]->chash_ok;
+            sum += member_mix(e->children[i]->chash);
+        }
+        if (ok) {
+            e->chash = content_key_of(node_kind_of(e), sum);
+            e->chash_ok = 1;
+        } else {
+            e->lookup_state = LOOKUP_ABSENT;
+        }
+    }
+    return ATREE_OK;
+}
+
+static atree_status_t lookup_inner(atree_t *t, atree_expr_t *e, atree__nid *out);
+
+/* The node an operand subexpression stands for, or ATREE_NID_NONE. */
+static atree_status_t resolve_operand(atree_t *t, atree_expr_t *e, atree__nid *out)
+{
+    if (e->lookup_state == LOOKUP_FOUND) {
+        *out = e->resolved;
+        return ATREE_OK;
+    }
+    if (e->lookup_state == LOOKUP_ABSENT || e->kind == ATREE_EXPR_PRED) {
+        *out = ATREE_NID_NONE;
+        return ATREE_OK;
+    }
+    return lookup_inner(t, e, out);
+}
+
+/* Does node `id` have exactly the flat members that `e`'s operands resolve
+ * to? Collects the node's flat members (walking same-operator children)
+ * and the operands' nodes into the scratch vector and compares the two
+ * sorted sets. */
+static atree_status_t verify_inner(atree_t *t, atree_expr_t *e, atree__nid id, bool *ok)
+{
+    uint8_t kind = node_kind_of(e);
+    uint32_t base = t->scratch.len;
+    uint32_t nflat;
+    uint32_t i;
+    atree_status_t st = ATREE_OK;
+
+    *ok = false;
+    if (t->nodes.data[id].kind != kind) {
+        return ATREE_OK;
+    }
+    t->worklist.len = 0;
+    st = atree__u32vec_push(&t->mem, &t->worklist, id);
+    while (st == ATREE_OK && t->worklist.len > 0) {
+        atree__nid cur = t->worklist.data[--t->worklist.len];
+        const struct atree__node *n = &t->nodes.data[cur];
+        for (i = 0; st == ATREE_OK && i < n->children.len; i++) {
+            atree__nid c = n->children.data[i];
+            if (t->nodes.data[c].kind == kind) {
+                st = atree__u32vec_push(&t->mem, &t->worklist, c);
+            } else {
+                st = atree__u32vec_push(&t->mem, &t->scratch, c);
+                if (st == ATREE_OK && t->scratch.len - base > e->nchildren) {
+                    t->scratch.len = base; /* more members than operands */
+                    return ATREE_OK;
+                }
+            }
+        }
+    }
+    if (st != ATREE_OK) {
+        t->scratch.len = base;
+        return st;
+    }
+    nflat = atree__sort_unique_u32(t->scratch.data + base, t->scratch.len - base);
+    t->scratch.len = base + nflat;
+    if (nflat != e->nchildren) {
+        t->scratch.len = base;
+        return ATREE_OK;
+    }
+    for (i = 0; i < e->nchildren; i++) {
+        atree__nid c;
+        st = resolve_operand(t, e->children[i], &c);
+        if (st != ATREE_OK || c == ATREE_NID_NONE) {
+            t->scratch.len = base;
+            return st;
+        }
+        st = atree__u32vec_push(&t->mem, &t->scratch, c);
+        if (st != ATREE_OK) {
+            t->scratch.len = base;
+            return st;
+        }
+    }
+    {
+        uint32_t nops = atree__sort_unique_u32(t->scratch.data + base + nflat, e->nchildren);
+        *ok = nops == nflat &&
+            memcmp(t->scratch.data + base, t->scratch.data + base + nflat,
+                   (size_t)nflat * sizeof(uint32_t)) == 0;
+    }
+    t->scratch.len = base;
+    return ATREE_OK;
+}
+
+/* Alg. 4 lines 1-4 for an inner subexpression: the existing node with the
+ * same flat content, or ATREE_NID_NONE. Every hash hit is verified. */
+static atree_status_t lookup_inner(atree_t *t, atree_expr_t *e, atree__nid *out)
+{
+    uint32_t cursor = UINT32_MAX;
+    atree__nid id;
+    *out = ATREE_NID_NONE;
+    if (e->lookup_state == LOOKUP_FOUND) {
+        *out = e->resolved;
+        return ATREE_OK;
+    }
+    if (e->lookup_state == LOOKUP_ABSENT || !e->chash_ok) {
+        e->lookup_state = LOOKUP_ABSENT;
+        return ATREE_OK;
+    }
+    while ((id = atree__cset_next(t, e->chash, &cursor)) != ATREE_NID_NONE) {
+        bool ok;
+        atree_status_t st = verify_inner(t, e, id, &ok);
+        if (st != ATREE_OK) {
+            return st;
+        }
+        if (ok) {
+            e->resolved = id;
+            e->lookup_state = LOOKUP_FOUND;
+            *out = id;
+            return ATREE_OK;
+        }
+    }
+    e->lookup_state = LOOKUP_ABSENT;
+    return ATREE_OK;
+}
+
+static atree_status_t build(atree_t *t, atree_expr_t *e, struct journalvec *j, atree__nid *out);
+
+static atree_status_t build_leaf(atree_t *t, atree_expr_t *e, struct journalvec *j, atree__nid *out)
 {
     struct atree__pred p;
     struct atree__probe probe;
@@ -892,6 +1186,10 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct journ
     struct atree__node *n;
     atree_status_t st;
 
+    if (e->lookup_state == LOOKUP_FOUND) {
+        *out = e->resolved;
+        return ATREE_OK;
+    }
     st = atree__expr_pred_intern(e, &t->mem, &t->strings, &p);
     if (st != ATREE_OK) {
         return st;
@@ -902,8 +1200,9 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct journ
         return st;
     }
     probe.kind = ATREE_NODE_LEAF;
-    probe.hash = atree__pred_hash(&p);
+    probe.hash = atree__pred_content_hash(&p, &t->strings);
     probe.pred = &p;
+    probe.leaf = NULL;
     probe.children = NULL;
     probe.nchildren = 0;
     id = atree__idset_find(t, &probe);
@@ -931,30 +1230,30 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct journ
     n->pred = slot;
     st = atree__u32vec_push(&t->mem, &t->leaves, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, false, false, false, false, 0);
+        abort_new_node(t, id, slot, false, false, false, false, false, 0);
         return st;
     }
-    node_at(t, id)->index_slot = t->leaves.len - 1;
+    t->leaf_pos.data[slot] = t->leaves.len - 1;
     if (indexed(t)) {
         st = atree__index_add(t, id);
         if (st != ATREE_OK) {
-            abort_new_node(t, id, slot, true, false, false, false, 0);
+            abort_new_node(t, id, slot, true, false, false, false, false, 0);
             return st;
         }
     }
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, true, indexed(t), false, false, 0);
+        abort_new_node(t, id, slot, true, indexed(t), false, false, false, 0);
         return st;
     }
     st = level_inc(t, 1);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, true, indexed(t), true, false, 0);
+        abort_new_node(t, id, slot, true, indexed(t), true, false, false, 0);
         return st;
     }
     st = journal_created(t, j, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, slot, true, indexed(t), true, true, 0);
+        abort_new_node(t, id, slot, true, indexed(t), true, false, true, 0);
         return st;
     }
     *out = id;
@@ -992,7 +1291,7 @@ static atree_status_t reorganize(atree_t *t, uint8_t kind, struct atree__u32vec 
          * walking the long parent lists of popular leaves. */
         for (i = 0; i < ids->len && examined < t->max_adjust_candidates; i++) {
             const struct atree__node *u = &t->nodes.data[ids->data[i]];
-            for (j = 0; j < u->nanchor && examined < t->max_adjust_candidates; j++) {
+            for (j = 0; j < u->end_a && examined < t->max_adjust_candidates; j++) {
                 atree__nid pid = u->parents.data[j];
                 const struct atree__node *p = &t->nodes.data[pid];
                 uint32_t k;
@@ -1077,6 +1376,7 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
     probe.kind = p->kind;
     probe.hash = new_hash;
     probe.pred = NULL;
+    probe.leaf = NULL;
     probe.children = tmp.data;
     probe.nchildren = tmp.len;
     if (atree__idset_find(t, &probe) != ATREE_NID_NONE) {
@@ -1138,7 +1438,6 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
         }
     }
     /* From here on nothing allocates until relevel; the journal entry is live. */
-    node_at(t, nid)->use_count++;
     t->edges++;
     p = node_at(t, pid);
     for (i = 0; i < p->children.len; i++) {
@@ -1153,7 +1452,8 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
         atree__idset_remove(t, old_hash, pid);
     }
     /* exactly one anchor edge: the kept children carry their old flags, the
-     * new edge has none; re-choose and adjust (no allocation) */
+     * new edge has none; re-choose and adjust (no allocation), then place
+     * every edge in its waker region for the new access child */
     {
         uint32_t ai = choose_anchor(t, nc.data, nc.len);
         for (i = 0; i < node_at(t, pid)->children.len; i++) {
@@ -1161,6 +1461,7 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
         }
     }
     reset_access_child(t, pid);
+    place_all_edges(t, pid);
     t->self_adjusted++;
     return relevel(t, pid, j);
 }
@@ -1220,7 +1521,7 @@ static atree_status_t self_adjust(atree_t *t, atree__nid nid, struct journalvec 
     return st;
 }
 
-static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct journalvec *j,
+static atree_status_t build_inner(atree_t *t, atree_expr_t *e, struct journalvec *j,
                                   atree__nid *out)
 {
     struct atree__u32vec ids;
@@ -1232,6 +1533,17 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
     uint32_t level = 0;
     uint32_t anchor_i;
     atree_status_t st;
+
+    /* Alg. 4 lines 1-4: an existing node for this subexpression is returned
+     * without visiting its operands. */
+    st = lookup_inner(t, e, &id);
+    if (st != ATREE_OK) {
+        return st;
+    }
+    if (id != ATREE_NID_NONE) {
+        *out = id;
+        return ATREE_OK;
+    }
 
     atree__u32vec_init(&ids);
     st = atree__u32vec_reserve(&t->mem, &ids, e->nchildren);
@@ -1267,6 +1579,7 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
     probe.kind = kind;
     probe.hash = inner_hash(kind, ids.data, ids.len);
     probe.pred = NULL;
+    probe.leaf = NULL;
     probe.children = ids.data;
     probe.nchildren = ids.len;
     id = atree__idset_find(t, &probe);
@@ -1294,10 +1607,13 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
         const struct atree__node *nn = node_at(t, id);
         anchor_i = choose_anchor(t, nn->children.data, nn->children.len);
     }
+    /* AND nodes with propagation on demand wake through their access child
+     * only, chosen below once every edge exists; link them as non-wakers. */
     for (i = 0; i < node_at(t, id)->children.len; i++) {
-        st = link_child(t, id, i, i == anchor_i);
+        bool waker = kind == ATREE_NODE_OR || (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) != 0;
+        st = link_child(t, id, i, i == anchor_i, waker);
         if (st != ATREE_OK) {
-            abort_new_node(t, id, UINT32_MAX, false, false, false, false, i);
+            abort_new_node(t, id, UINT32_MAX, false, false, false, false, false, i);
             return st;
         }
         {
@@ -1309,24 +1625,34 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
     }
     n = node_at(t, id);
     if (level >= UINT16_MAX) {
-        abort_new_node(t, id, UINT32_MAX, false, false, false, false, n->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, false, false, false, n->children.len);
         return ATREE_ERR_LIMIT;
     }
     n->level = (uint16_t)(level + 1);
     reset_access_child(t, id);
+    t->csum.data[id] =
+        flat_sum(t, kind, node_at(t, id)->children.data, node_at(t, id)->children.len);
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, UINT32_MAX, false, false, false, false, n->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, false, false, false, n->children.len);
+        return st;
+    }
+    st = atree__cset_insert(t, atree__content_key(t, id), id);
+    if (st != ATREE_OK) {
+        abort_new_node(t, id, UINT32_MAX, false, false, true, false, false,
+                       node_at(t, id)->children.len);
         return st;
     }
     st = level_inc(t, level + 1);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, UINT32_MAX, false, false, true, false, node_at(t, id)->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, true, true, false,
+                       node_at(t, id)->children.len);
         return st;
     }
     st = journal_created(t, j, id);
     if (st != ATREE_OK) {
-        abort_new_node(t, id, UINT32_MAX, false, false, true, true, node_at(t, id)->children.len);
+        abort_new_node(t, id, UINT32_MAX, false, false, true, true, true,
+                       node_at(t, id)->children.len);
         return st;
     }
     if ((t->flags & ATREE_FLAG_NO_SELF_ADJUST) == 0) {
@@ -1339,8 +1665,7 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
     return ATREE_OK;
 }
 
-static atree_status_t build(atree_t *t, const atree_expr_t *e, struct journalvec *j,
-                            atree__nid *out)
+static atree_status_t build(atree_t *t, atree_expr_t *e, struct journalvec *j, atree__nid *out)
 {
     switch ((enum atree__expr_kind)e->kind) {
     case ATREE_EXPR_PRED:
@@ -1411,7 +1736,6 @@ static void rollback(atree_t *t, struct journalvec *j)
                     struct atree__node *c = node_at(t, cid);
                     (void)atree__u32vec_push(&t->mem, &c->parents, e->node);
                     child_pos_of_vec(&e->old_children)[k] = c->parents.len - 1;
-                    c->use_count++;
                     t->edges++;
                 } else {
                     /* kept: its current position (and flag) is authoritative */
@@ -1426,17 +1750,18 @@ static void rollback(atree_t *t, struct journalvec *j)
             p->children = e->old_children;
             atree__u32vec_init(&e->old_children);
             p->hash = e->old_hash;
-            p->access_child = e->old_access;
             for (k = 0; k < node_at(t, e->node)->children.len; k++) {
                 set_anchor(t, e->node, k, k == old_anchor);
             }
+            set_access_child(t, e->node, e->old_access);
+            place_all_edges(t, e->node);
             t->self_adjusted--;
             break;
         }
         case J_CREATED:
         default: {
             const struct atree__node *n = &t->nodes.data[e->node];
-            if (n->kind != ATREE_NODE_FREE && n->use_count == 0) {
+            if (n->kind != ATREE_NODE_FREE && !in_use(n)) {
                 cascade(t, e->node);
             }
             break;
@@ -1529,6 +1854,9 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
         journalvec_init(&journal);
         /* Rollback must not fail: size the cascade worklist up front. */
         st = atree__u32vec_reserve(&t->mem, &t->worklist, t->nodes.len + expr_node_count(norm) + 1);
+        if (st == ATREE_OK) {
+            st = prehash(t, norm);
+        }
         if (st == ATREE_OK) {
             st = build(t, norm, &journal, &root);
         }
@@ -1693,6 +2021,7 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
     uint64_t leaves = 0;
     uint64_t edges = 0;
     uint64_t parent_links = 0;
+    uint32_t content_entries = 0;
     uint64_t subs_on_nodes = 0;
     uint32_t iter;
     uint64_t key;
@@ -1742,11 +2071,11 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             }
             subs_on_nodes += subs->len;
         }
-        if (n->use_count != n->parents.len + (subs != NULL ? subs->len : 0)) {
-            FAIL("use_count != parents + subscriptions", i, n->use_count);
-        }
-        if (n->use_count == 0) {
+        if (!in_use(n)) {
             FAIL("orphan node", i, 0);
+        }
+        if (n->end_aw > n->end_a || n->end_a > n->end_w || n->end_w > n->parents.len) {
+            FAIL("parent region boundaries out of order", i, n->parents.len);
         }
         for (j = 0; j < n->parents.len; j++) {
             const struct atree__node *p = &t->nodes.data[n->parents.data[j]];
@@ -1761,12 +2090,12 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (edge_pos(child_pos_c(p)[ci]) != j) {
                 FAIL("parent position out of date", i, n->parents.data[j]);
             }
-            if (edge_anchored(child_pos_c(p)[ci]) != (j < n->nanchor)) {
-                FAIL("anchor flag disagrees with the anchored prefix", i, j);
+            if (edge_anchored(child_pos_c(p)[ci]) != (j < n->end_a)) {
+                FAIL("anchor flag disagrees with the anchored regions", i, j);
             }
-        }
-        if (n->nanchor > n->parents.len) {
-            FAIL("anchored prefix longer than the parent list", i, n->nanchor);
+            if (is_waker(p, i) != (j < n->end_aw || (j >= n->end_a && j < n->end_w))) {
+                FAIL("waker status disagrees with the parent region", i, j);
+            }
         }
         parent_links += n->parents.len;
         probe.kind = n->kind;
@@ -1779,13 +2108,15 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (n->pred >= t->preds.len || t->preds.data[n->pred].kind >= ATREE_PRED_KIND_COUNT) {
                 FAIL("leaf predicate slot invalid", i, n->pred);
             }
-            if (n->index_slot >= t->leaves.len || t->leaves.data[n->index_slot] != i) {
-                FAIL("leaf not at its slot in the leaf list", i, n->index_slot);
+            if (t->leaf_pos.data[n->pred] >= t->leaves.len ||
+                t->leaves.data[t->leaf_pos.data[n->pred]] != i) {
+                FAIL("leaf not at its slot in the leaf list", i, t->leaf_pos.data[n->pred]);
             }
-            if (atree__pred_hash(&t->preds.data[n->pred]) != n->hash) {
+            if (atree__pred_content_hash(&t->preds.data[n->pred], &t->strings) != n->hash) {
                 FAIL("leaf hash stale", i, 0);
             }
             probe.pred = &t->preds.data[n->pred];
+            probe.leaf = NULL;
             probe.children = NULL;
             probe.nchildren = 0;
         } else {
@@ -1818,6 +2149,21 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (anchors != 1) {
                 FAIL("inner node without exactly one anchor edge", i, anchors);
             }
+            if (t->csum.data[i] != flat_sum(t, n->kind, n->children.data, n->children.len)) {
+                FAIL("flat content sum stale", i, 0);
+            }
+            {
+                uint32_t cursor = UINT32_MAX;
+                uint64_t ckey = atree__content_key(t, i);
+                atree__nid found;
+                while ((found = atree__cset_next(t, ckey, &cursor)) != ATREE_NID_NONE &&
+                       found != i) {
+                }
+                if (found != i) {
+                    FAIL("inner node missing from the content table", i, 0);
+                }
+                content_entries++;
+            }
             if (n->kind == ATREE_NODE_AND) {
                 bool pod = (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) == 0;
                 if (pod != (n->access_child != ATREE_NID_NONE)) {
@@ -1833,6 +2179,7 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
                 FAIL("inner hash stale", i, 0);
             }
             probe.pred = NULL;
+            probe.leaf = NULL;
             probe.children = n->children.data;
             probe.nchildren = n->children.len;
         }
@@ -1855,6 +2202,9 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
     }
     if (parent_links != edges) {
         FAIL("parent links do not match child links", parent_links, edges);
+    }
+    if (content_entries != t->content.count) {
+        FAIL("content table size disagrees with inner nodes", 0, t->content.count);
     }
     if (indexed(t)) {
         st = atree__index_check(t, &tmp, msg, cap);

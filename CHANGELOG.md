@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- Insert looks each normalized subexpression up before building it (paper
+  Alg. 4 lines 1-4): leaves by a content hash that needs no string-table
+  access, inner nodes through a new content table keyed by flat structure
+  (so `AND(AND(a,b),c)` finds `AND(a,b,c)`), every hit verified
+  structurally. Reorganize now runs only for nodes that are new.
+- Normalization allocates the normalized copy from a single arena instead
+  of one allocation per node and literal.
+- Parent lists are kept in four regions (anchored/waker) so the search
+  sweep never reads an AND parent it cannot wake; the node layout drops the
+  stored use count and the leaf slot (both derived or kept beside the
+  predicate slab) to fit the boundaries in 64 bytes.
+- Leaf identity hashes string literals by content, so the same predicate
+  text always hashes alike whether or not its strings are interned.
 - Inner nodes record, per child, their position in the child's parent
   list: unlinking (delete, rollback) is O(log fan-out) instead of linear in
   the child's parent count; `atree_validate` checks positions directly and

@@ -64,9 +64,9 @@ event and the index has more nodes per expression than the paper's.
 
 | | Paper, A-Tree row of Table 4 (1.39M real ads expressions) | libatree, `--paper` (1M synthetic expressions, 3000 events) |
 |---|---|---|
-| matching time | 1.6 ms | p50 15.8 ms, p99 29.2 ms, with about 27 000 matches and 44 000 nodes visited per event |
-| construction | 2.9 s | 12.4 s (80 600 expressions/s, normalize + build; parsing timed separately) |
-| memory | 205 MB (147 B/expression) | 665 B/expression allocated, 828 MB RSS; 3.03M nodes, 5.69M edges |
+| matching time | 1.6 ms | p50 12.8 ms, p99 24.2 ms, with about 26 000 matches and 44 000 nodes visited per event |
+| construction | 2.9 s | 10.4 s (96 000 expressions/s, normalize + build; parsing timed separately) |
+| memory | 205 MB (147 B/expression) | 724 B/expression allocated, 916 MB RSS; 3.03M nodes, 5.69M edges |
 | machine | 2.2 GHz, 2018 | Apple M-series laptop, 2026 |
 
 What the comparison does and does not say:
@@ -79,7 +79,7 @@ What the comparison does and does not say:
   density is the same for both implementations, libatree is 26–42× faster
   than the crate; on a sparse event (`--event-size 5`) at 100k expressions
   the p50 is 0.22 ms.
-- **Construction.** libatree builds the 1M index in 12.4 s against the
+- **Construction.** libatree builds the 1M index in 10.4 s against the
   paper's 2.9 s for 1.39M expressions. Our figure covers normalization,
   the DAG build and journaling (the benchmark parses outside the timed
   region, like the paper, whose expressions are already structured) on a
@@ -89,15 +89,16 @@ What the comparison does and does not say:
   candidate scan over popular leaves: the first version ran at 14 200
   expressions/s at 1M and needed `max_adjust_candidates = 256` to reach
   47 500/s at the price of 1.1% more edges. Anchor lists (docs/DESIGN.md,
-  "Reorganize") make that scan exact and cheap: the default configuration
-  now inserts 80 600/s at 1M and 103 500/s at 100k, within 5% of running
-  with reorganize and self-adjust disabled (109 000/s), and the index has
-  marginally fewer edges than before (582 571 vs 582 906 at 100k; 5 689 983
-  vs 5 714 435 at 1M) because the scan never hits its cap. The cap still
+  "Reorganize") make that scan exact and cheap, and the lookup-first insert
+  (below) skips it for subexpressions that already exist: the default
+  configuration now inserts 96 000/s at 1M and 127 000/s at 100k, within
+  10% of running with reorganize and self-adjust disabled (138 000/s), and
+  the index has marginally fewer edges than before (582 566 vs 582 906 at
+  100k; 5 689 875 vs 5 714 435 at 1M). The cap still
   bounds self-adjust, which scans the full parent list of a new node's
   least popular child; lowering it to 256 changes 100k throughput by about
   3%.
-- **Memory.** Per expression libatree uses about 4.5× the paper's figure,
+- **Memory.** Per expression libatree uses about 5× the paper's figure,
   but the synthetic workload also has about 3 nodes per expression where
   the ads workload, with predicates shared 68 times on average, has far
   fewer. Per node libatree spends roughly 220 bytes: a 64-byte node, two
@@ -123,37 +124,39 @@ the paper, whose expressions are already structured.
 | predicates per expression | 1–56 | 54.4 on average |
 | distinct predicates | 973 794 | 915 361 leaves |
 | predicate sharing | 68.76× | 82.7× |
-| construction | 2.9 s | 137.7 s (10 100 expressions/s) |
-| memory | 205 MB | 1.43 GB RSS; 4.49M nodes, 18.7M edges |
+| construction | 2.9 s | 75.5 s (18 400 expressions/s); 137.7 s before the lookup-first insert |
+| memory | 205 MB | 1.68 GB RSS; 4.47M nodes, 18.8M edges |
 
-So on a profile with the paper's sharing, libatree constructs about 47×
-more slowly than the paper's figure, far more than the 4× gap on the
-default synthetic workload. The reason is structural, not a constant factor:
+So on a profile with the paper's sharing, libatree constructs about 26×
+more slowly than the paper's figure, far more than the 3.6× gap on the
+default synthetic workload. What the work on this profile showed:
 
-- **Alg. 4 returns in O(1) on a hit; our build does not.** The paper
-  computes the expression's identity first (`generateID(expr)`) and returns
-  the existing node without visiting its subexpressions. libatree's `build()`
-  recurses bottom-up: every one of the 75.7M predicate instances is hashed,
-  looked up and interned, and every one of the ~29M inner-node instances
-  runs reorganize before its identity lookup, although 96% of them already
-  exist (4.49M nodes were created). The profile of this run is reorganize
-  first, then predicate hashing, then the sort in normalization.
-- **Inner-level sharing.** The paper's workload also shares subexpressions
-  at every level (2.88× even at level 9); our pool reuse of 50% per depth
-  still leaves 3.57M inner nodes for 1.39M expressions, which is also why
-  the index is seven times larger than the paper's.
-
-Making `build()` lookup-first (hash the normalized expression from its
-content, probe the identity table top-down, and verify a hit by comparing
-the stored subtree instead of rebuilding it) would make the cost of an
-insert proportional to the nodes it creates rather than to the size of the
-expression, as in the paper, while keeping exact identity. That is the
-next construction change worth making; it does not affect matching.
-
-The matching numbers of this run are not comparable to the paper's: the
-synthetic expressions are or-heavy over 122 dimensions, so a quarter of all
-expressions match every event (352 000 matches per event, 273 ms p50),
-whereas an ads workload matches a handful.
+- **Alg. 4 returns in O(1) on a hit.** The paper computes the expression's
+  identity first (`generateID(expr)`) and returns the existing node without
+  visiting its subexpressions. The first libatree build recursed bottom-up,
+  hashing, looking up and interning every one of the 75.7M predicate
+  instances and running reorganize for every one of the ~29M inner-node
+  instances although 96% of them already existed. Insert now hashes the
+  normalized expression from its text, looks every subexpression up first
+  (leaves in one probe without allocation, inner nodes through a content
+  table keyed by flat structure, every hit verified) and reorganizes only
+  the nodes that are new (docs/DESIGN.md, "Lookup first"). Normalization,
+  which had been copying every leaf and literal with one allocation each
+  and became the largest remaining cost, now builds its copy in one arena.
+  Together these took the profile from 137.7 s to 75.5 s.
+- **What remains.** The profile of the insert phase is now the greedy
+  reorganize and self-adjust on new nodes (about half), normalization
+  (about a third) and the leaf probes. Reorganize and self-adjust are the
+  paper's own algorithms; the remaining gap to 2.9 s is also a workload
+  difference: the paper's expressions share subexpressions at every level
+  (2.88× even at level 9), while our pool reuse of 50% per depth still
+  leaves 3.55M inner nodes for 1.39M expressions, which is why the index is
+  eight times larger than the paper's and why most inserts create nodes.
+- **Matching on this profile.** The waker regions of the parent lists
+  (docs/DESIGN.md, "Edges and hot leaves") cut p50 from 272 ms to 244 ms
+  with 352 000 matches per event; the numbers are not comparable to the
+  paper's because a quarter of the synthetic expressions match every
+  event.
 
 ## Other implementations
 
@@ -166,7 +169,8 @@ event schema and projects streams onto schemas (an application-level
 pattern that works with libatree as one tree per schema); it physically
 detaches an AND node from all children but its access child so a true leaf
 never iterates parents it cannot wake, whereas libatree keeps every
-structural edge and skips non-waking AND parents during the sweep; it
+structural edge and partitions each parent list into waker and non-waker
+regions, so the sweep reads only the parents it can wake; it
 recognizes two-sided range predicates as one indexed interval, whereas
 libatree indexes each side as a ray and joins them with an AND; its
 per-event truth values live in the nodes, so one tree serves one event at a

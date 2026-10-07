@@ -25,7 +25,24 @@ struct atree__idset {
 
 #define ATREE_IDSET_TOMB (UINT32_MAX - 1)
 
-/* All functions operate on t->identity with t->mem and read t->nodes/preds. */
+/* The content table (t->content) is a second set of the same shape that
+ * holds inner nodes under their flat structural hash: operator plus the
+ * multiset of children, where a child of the same operator contributes
+ * its own flat members (so AND(AND(a,b),c) and AND(a,b,c) share a key). It
+ * is what lets an insert return an existing node without rebuilding it
+ * (paper Alg. 4 lines 1-4); a hit is always verified structurally, so a
+ * collision merges nothing. Its keys never change: self-adjust rewires a
+ * node to a same-operator child, which leaves the flat members alone. */
+uint64_t atree__content_key(const struct atree *t, atree__nid id);
+atree_status_t atree__cset_insert(struct atree *t, uint64_t hash, atree__nid id);
+bool atree__cset_remove(struct atree *t, uint64_t hash, atree__nid id);
+/* Iterates the nodes whose content key is `hash`: start with *cursor ==
+ * UINT32_MAX; returns ATREE_NID_NONE when exhausted. */
+atree__nid atree__cset_next(const struct atree *t, uint64_t hash, uint32_t *cursor);
+void atree__cset_free(struct atree *t);
+
+/* The identity functions operate on t->identity with t->mem and read
+ * t->nodes/preds. */
 void atree__idset_init(struct atree__idset *s);
 void atree__idset_free(struct atree *t);
 
