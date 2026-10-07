@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
-      - run: make CC=gcc CFLAGS=-m32 LDFLAGS=-m32 check
+      - run: make CC=gcc EXTRA_CFLAGS=-m32 EXTRA_LDFLAGS=-m32 check
 
   macos-clang:
     runs-on: macos-14

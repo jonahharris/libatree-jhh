@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format follows
   now set after the push succeeds. `test_alloc_failure` requires a retry
   after a failed search to return exactly the undisturbed count.
 
+- The 32-bit CI job passed `CFLAGS=-m32` on the make command line, which
+  replaces the Makefile's whole flag set, so that build ran without
+  `-std=c99`, the warning set or `-Werror`. The Makefile now takes
+  `EXTRA_CFLAGS`/`EXTRA_LDFLAGS`, which are appended.
 ### Changed
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table

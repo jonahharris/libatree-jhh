@@ -4,6 +4,9 @@
 # Targets: all check check-asan check-ubsan check-tsan check-valgrind
 #          check-header bench fuzz format format-check install clean
 # Variables: CC CXX AR MODE=debug|release WERROR=1|0 BUILD=dir PREFIX=/usr/local
+#            EXTRA_CFLAGS EXTRA_LDFLAGS (e.g. -m32; appended, so the warning
+#            set stays in force. Setting CFLAGS on the command line instead
+#            would replace every flag below, -Werror included.)
 #            SAN="<sanitizer flags>" (internal; used by the check-* targets)
 
 CC      ?= cc
@@ -37,9 +40,11 @@ else
 OPT := -O0 -g
 endif
 
+EXTRA_CFLAGS  ?=
+EXTRA_LDFLAGS ?=
 CPPFLAGS += -Iinclude -Isrc -DATREE_BUILDING
-CFLAGS   += -std=c99 $(OPT) $(WARNINGS) -fPIC -fvisibility=hidden -MMD -MP $(SAN)
-LDFLAGS  += $(SAN)
+CFLAGS   += -std=c99 $(OPT) $(WARNINGS) -fPIC -fvisibility=hidden -MMD -MP $(SAN) $(EXTRA_CFLAGS)
+LDFLAGS  += $(SAN) $(EXTRA_LDFLAGS)
 
 ifeq ($(UNAME_S),Darwin)
 SHLIB      := $(BUILD)/libatree.$(SONAME_MAJOR).dylib
@@ -161,7 +166,7 @@ check-fuzz-compile: $(STLIB)
 
 $(BUILD)/bench/%: bench/%.c $(STLIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) -std=c99 -O2 -g $(WARNINGS) -o $@ $< $(STLIB) $(LDFLAGS) -lm
+	$(CC) $(CPPFLAGS) -std=c99 -O2 -g $(WARNINGS) $(EXTRA_CFLAGS) -o $@ $< $(STLIB) $(LDFLAGS) -lm
 
 bench: $(BENCH_BINS)
 	@echo "built: $(BENCH_BINS)"
@@ -204,6 +209,6 @@ clean:
 help:
 	@echo "targets: all check check-asan check-ubsan check-tsan check-valgrind check-header"
 	@echo "         bench fuzz format format-check install clean"
-	@echo "vars:    CC CXX MODE=debug|release WERROR=1|0 BUILD=dir PREFIX=path"
+	@echo "vars:    CC CXX MODE=debug|release WERROR=1|0 BUILD=dir PREFIX=path EXTRA_CFLAGS EXTRA_LDFLAGS"
 
 -include $(DEPS) $(TEST_DEPS)
