@@ -1015,7 +1015,7 @@ static atree_status_t prehash(atree_t *t, atree_expr_t *e)
         struct atree__probe probe;
         atree__nid id;
         probe.kind = ATREE_NODE_LEAF;
-        probe.hash = atree__expr_leaf_hash(e);
+        probe.hash = e->hash; /* == atree__expr_leaf_hash(e), computed at build */
         probe.pred = NULL;
         probe.leaf = e;
         probe.children = NULL;
@@ -1188,7 +1188,7 @@ static atree_status_t build_leaf(atree_t *t, atree_expr_t *e, struct journalvec 
         return st;
     }
     probe.kind = ATREE_NODE_LEAF;
-    probe.hash = atree__pred_content_hash(&p, &t->strings);
+    probe.hash = e->hash; /* == atree__pred_content_hash(&p): same bytes, interned or not */
     probe.pred = &p;
     probe.leaf = NULL;
     probe.children = NULL;

@@ -428,17 +428,20 @@ TEST(hash_equality_cost_rank)
     ASSERT_OK(atree__pred_check(&f.attrs, &a));
     ASSERT_OK(atree__pred_check(&f.attrs, &b));
     ASSERT_TRUE(atree__pred_equal(&a, &b)); /* order and duplicates normalized away */
-    ASSERT_EQ_U64(atree__pred_hash(&a), atree__pred_hash(&b));
+    ASSERT_EQ_U64(atree__pred_content_hash(&a, &f.strings),
+                  atree__pred_content_hash(&b, &f.strings));
     b.kind = ATREE_PRED_NOT_IN;
     ASSERT_FALSE(atree__pred_equal(&a, &b));
-    ASSERT_TRUE(atree__pred_hash(&a) != atree__pred_hash(&b));
+    ASSERT_TRUE(atree__pred_content_hash(&a, &f.strings) !=
+                atree__pred_content_hash(&b, &f.strings));
 
     a = mk(A_INT, ATREE_PRED_CMP, ATREE_OP_LT);
     a.operand = v_int(1);
     b = mk(A_INT, ATREE_PRED_CMP, ATREE_OP_LE);
     b.operand = v_int(1);
     ASSERT_FALSE(atree__pred_equal(&a, &b));
-    ASSERT_TRUE(atree__pred_hash(&a) != atree__pred_hash(&b));
+    ASSERT_TRUE(atree__pred_content_hash(&a, &f.strings) !=
+                atree__pred_content_hash(&b, &f.strings));
     b.op = ATREE_OP_LT;
     b.attr = A_FLOAT;
     ASSERT_FALSE(atree__pred_equal(&a, &b));

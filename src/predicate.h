@@ -69,7 +69,6 @@ void atree__pred_negate(struct atree__pred *p);
 /* Three-valued evaluation against the event's value for p->attr. */
 atree_tri_t atree__pred_eval(const struct atree__pred *p, const struct atree__value *v);
 
-uint64_t atree__pred_hash(const struct atree__pred *p);
 /* Hash over the predicate's content with string literals hashed by their
  * bytes (lists order-free), so an unresolved expression leaf hashes to the
  * same value (atree__expr_leaf_hash) without touching the string table. */

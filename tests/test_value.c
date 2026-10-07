@@ -121,7 +121,7 @@ TEST(intersects_and_contains_all)
     return 0;
 }
 
-TEST(value_hash_and_equality)
+TEST(value_equality)
 {
     struct atree__value a;
     struct atree__value b;
@@ -133,25 +133,21 @@ TEST(value_hash_and_equality)
     a.u.i = 42;
     b = a;
     ASSERT_TRUE(atree__value_equal(&a, &b));
-    ASSERT_EQ_U64(atree__value_hash(&a), atree__value_hash(&b));
     b.u.i = 43;
     ASSERT_FALSE(atree__value_equal(&a, &b));
-    ASSERT_TRUE(atree__value_hash(&a) != atree__value_hash(&b));
 
     a.kind = ATREE_V_FLOAT;
     a.u.f = 0.0;
     b.kind = ATREE_V_FLOAT;
     b.u.f = -0.0;
     ASSERT_TRUE(atree__value_equal(&a, &b));
-    ASSERT_EQ_U64(atree__value_hash(&a), atree__value_hash(&b));
 
-    /* Same bits, different kinds: never equal, different hashes. */
+    /* Same bits, different kinds: never equal. */
     a.kind = ATREE_V_INT;
     a.u.i = 0;
     b.kind = ATREE_V_STRING;
     b.u.s = 0;
     ASSERT_FALSE(atree__value_equal(&a, &b));
-    ASSERT_TRUE(atree__value_hash(&a) != atree__value_hash(&b));
 
     a.kind = ATREE_V_INT_LIST;
     a.u.il.data = la;
@@ -160,10 +156,8 @@ TEST(value_hash_and_equality)
     b.u.il.data = lb;
     b.u.il.len = 3;
     ASSERT_TRUE(atree__value_equal(&a, &b));
-    ASSERT_EQ_U64(atree__value_hash(&a), atree__value_hash(&b));
     b.u.il.data = lc;
     ASSERT_FALSE(atree__value_equal(&a, &b));
-    ASSERT_TRUE(atree__value_hash(&a) != atree__value_hash(&b));
     b.u.il.data = lb;
     b.u.il.len = 2;
     ASSERT_FALSE(atree__value_equal(&a, &b));
@@ -213,6 +207,6 @@ RUN_TEST(int_to_double_exact);
 RUN_TEST(sort_unique);
 RUN_TEST(binary_search);
 RUN_TEST(intersects_and_contains_all);
-RUN_TEST(value_hash_and_equality);
+RUN_TEST(value_equality);
 RUN_TEST(value_copy_and_free);
 TEST_MAIN_END()

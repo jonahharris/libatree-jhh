@@ -87,16 +87,15 @@ static int rawstr_qsort_cmp(const void *pa, const void *pb)
     return rawstr_cmp((const struct atree__rawstr *)pa, (const struct atree__rawstr *)pb);
 }
 
+/* A leaf's structural hash is the tree's leaf identity hash, so the one
+ * computation at build time serves normalization (ordering, dedup) and the
+ * insert's identity probes alike. */
 static uint64_t compute_hash(const atree_expr_t *e)
 {
     uint64_t h = atree__hash_u64(UINT64_C(0x65787072) ^ e->kind);
     uint32_t i;
     if (e->kind == ATREE_EXPR_PRED) {
-        h = atree__hash_combine(h, atree__pred_hash(&e->pred));
-        for (i = 0; i < e->nstrs; i++) {
-            h = atree__hash_combine(h, atree__hash_bytes(e->strs[i].data, e->strs[i].len));
-        }
-        return h;
+        return atree__expr_leaf_hash(e);
     }
     for (i = 0; i < e->nchildren; i++) {
         h = atree__hash_combine(h, e->children[i]->hash);

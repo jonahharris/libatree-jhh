@@ -354,13 +354,6 @@ atree_tri_t atree__pred_eval(const struct atree__pred *p, const struct atree__va
     }
 }
 
-uint64_t atree__pred_hash(const struct atree__pred *p)
-{
-    uint64_t h = atree__hash_u64(UINT64_C(0x70726564) ^ p->attr);
-    h = atree__hash_combine(h, ((uint64_t)p->kind << 8) | p->op);
-    return atree__hash_combine(h, atree__value_hash(&p->operand));
-}
-
 static uint64_t str_content_hash(const struct atree__strtab *strings, uint32_t id)
 {
     uint32_t len = 0;

@@ -54,7 +54,8 @@ struct atree_expr {
     const atree_t *tree;
     uint8_t kind;   /* enum atree__expr_kind */
     uint32_t depth; /* 1 for leaves and constants */
-    uint64_t hash;  /* structural hash; children in stored order */
+    uint64_t hash;  /* structural hash; children in stored order; for a PRED
+                       leaf atree__expr_leaf_hash (the tree's leaf identity) */
     uint32_t nchildren;
     atree_expr_t **children;
     struct atree__pred pred;    /* ATREE_EXPR_PRED. String operands are unresolved:

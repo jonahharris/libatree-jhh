@@ -83,8 +83,7 @@ bool atree__contains_all_u32(const uint32_t *hay, uint32_t nh, const uint32_t *n
 
 /* ---- values ------------------------------------------------------------- */
 
-/* Structural hash / equality of literal operands (lists compared elementwise). */
-uint64_t atree__value_hash(const struct atree__value *v);
+/* Structural equality of literal operands (lists compared elementwise). */
 bool atree__value_equal(const struct atree__value *a, const struct atree__value *b);
 
 /* Deep copy of a list-bearing value (scalars are copied by assignment). The

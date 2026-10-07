@@ -238,45 +238,6 @@ bool atree__contains_all_u32(const uint32_t *hay, uint32_t nh, const uint32_t *n
 
 /* ---- values ------------------------------------------------------------- */
 
-uint64_t atree__value_hash(const struct atree__value *v)
-{
-    uint64_t h = atree__hash_u64((uint64_t)v->kind + UINT64_C(0x51ed270b));
-    uint32_t i;
-    switch (v->kind) {
-    case ATREE_V_UNDEFINED:
-        break;
-    case ATREE_V_BOOL:
-        h = atree__hash_combine(h, v->u.b ? 1 : 0);
-        break;
-    case ATREE_V_INT:
-        h = atree__hash_combine(h, (uint64_t)v->u.i);
-        break;
-    case ATREE_V_FLOAT:
-        h = atree__hash_combine(h, atree__double_bits(v->u.f));
-        break;
-    case ATREE_V_STRING:
-        h = atree__hash_combine(h, v->u.s);
-        break;
-    case ATREE_V_INT_LIST:
-        h = atree__hash_combine(h, v->u.il.len);
-        for (i = 0; i < v->u.il.len; i++) {
-            h = atree__hash_combine(h, (uint64_t)v->u.il.data[i]);
-        }
-        break;
-    case ATREE_V_STRING_LIST:
-        h = atree__hash_combine(h, v->u.sl.len);
-        /* An unresolved list (data == NULL) hashes by length only; its raw
-         * strings are hashed by the expression layer. */
-        for (i = 0; v->u.sl.data != NULL && i < v->u.sl.len; i++) {
-            h = atree__hash_combine(h, v->u.sl.data[i]);
-        }
-        break;
-    default:
-        break;
-    }
-    return h;
-}
-
 bool atree__value_equal(const struct atree__value *a, const struct atree__value *b)
 {
     if (a->kind != b->kind) {
