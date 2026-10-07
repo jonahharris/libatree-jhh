@@ -121,7 +121,10 @@ unescaped strings) is balanced per call. The libFuzzer harness in
 content (string literals by their bytes, lists order-free) so that an
 unresolved expression leaf hashes to the same value without touching the
 string table; an inner node's identity is (operator, sorted unique child
-ids). Both are hashed and then compared structurally. Commutativity
+ids). Both are hashed and then compared structurally. An expression
+leaf's structural hash is that same identity hash, computed once when the
+leaf is built and reused by normalization's canonical ordering, the lookup
+probe and the creation of a new leaf. Commutativity
 and associativity are therefore free: `a and b` and `b and a` are one node,
 and `(a and b) and c` is `AND(a, b, c)` after flattening.
 

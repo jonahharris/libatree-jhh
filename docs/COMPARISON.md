@@ -73,7 +73,7 @@ below are read off the curves at 1M expressions.
 
 | | Paper, A-Tree at 1M synthetic expressions (Figures 11a, 12a, 13a) | libatree `--paper` (1M expressions, 3000 events) |
 |---|---|---|
-| construction | about 5.3 s | 4.4 s (228 000 expressions/s; normalize + build, parsing timed separately) |
+| construction | about 5.3 s | 3.9 s (254 000 expressions/s; normalize + build, parsing timed separately) |
 | memory | about 300 MB | 411 MB allocated (1.87M nodes, 4.20M edges, 220 B per node); 764 MB peak RSS, which includes the benchmark's own predicate pool and the slab-doubling transient |
 | matching time | about 0.65 ms | p50 2.3 ms, p99 4.0 ms, with 27 500 matches, 23 600 nodes visited and 12 400 true predicates per event |
 | machine | 2.2 GHz Intel, 2018, gcc 7.4 -O3 | Apple M-series laptop, 2026, clang -O2 |
@@ -82,8 +82,8 @@ What the comparison says:
 
 - **Construction is faster than the paper's curve, but for a different
   reason than it should be.** Figure 9(c) puts reorganize and self-adjust
-  at 52% of the paper's construction time; here they are 14% (3.8 s with
-  both disabled, 4.4 s with both on). The paper's base path is fast because
+  at 52% of the paper's construction time; here they are 13% (3.4 s with
+  both disabled, 3.9 s with both on). The paper's base path is fast because
   its expressions arrive as structures over predicate ids and its identity
   is arithmetic over child ids (§4.2.1: and → add, or → multiply), so a
   repeated expression, which at this sharing is about half of the inserts,
@@ -91,12 +91,23 @@ What the comparison says:
   (copy, sort, dedupe), hashes every leaf from its literal, probes each,
   then verifies structurally. In a no-inline profile of the 1M insert phase
   (taken on the previous workload, same parameters apart from sharing) leaf
-  hashing is 11–12% (every leaf is hashed twice by two different functions),
-  identity and content table probes and inserts about 8% (a probe reads the
-  slot, the node and the predicate), normalization with its sorts about
-  10%, the waker-region bookkeeping of the parent lists about 11%, the
-  allocator about 5%; reorganize and self-adjust together are the measured
-  14%.
+  hashing was 11–12% while every leaf was hashed by three functions (the
+  structural hash for normalization, the lookup probe, the content hash of
+  a new leaf); it is hashed once now, which bought the 9% between 4.4 s
+  and 3.9 s. Identity and content table probes and inserts are about 8% (a
+  probe reads the slot, the node and the predicate), normalization with
+  its sorts about 10%, the waker-region bookkeeping of the parent lists
+  about 11%, the allocator about 5%; reorganize and self-adjust together
+  are the measured 14%.
+- **Measured and declined.** Storing the high 32 bits of the key beside
+  each node id in the identity and content tables, so a probe reads a node
+  only on a tag match, made inserts 4–5% faster and the index 6% larger
+  (436 against 411 bytes per expression); memory is the larger gap, so the
+  tables keep their 4-byte slots. Verifying a content-table hit by looking
+  the node's children up among the operands' ids instead of reading each
+  child node changed nothing measurable on either profile (the children
+  were just touched by the operand lookups). The waker regions cost about
+  11% of insert and buy 11–15% of search; they stay.
 - **Memory is 1.37× the paper's at the same sharing.** The index has 856 000
   leaves for 646 000 distinct predicates: the 210 000 extra leaves are the
   negated variants that NOT push-down creates (the paper pushes NOT to the
@@ -148,11 +159,11 @@ without parsing, as in the paper, whose expressions are already structured.
 | distinct predicates | 973 794 | 865 780 (1 109 393 leaves after NOT push-down) |
 | predicate sharing | 68.76× | 68.78× |
 | subexpression sharing | 28× / 11× / 7.5× by level | 23.7× overall |
-| construction | 2.9 s (1.4 s without reorganize and self-adjust) | 12.4 s (112 000 expressions/s); 10.8 s without reorganize and self-adjust |
+| construction | 2.9 s (1.4 s without reorganize and self-adjust) | 11.0 s (127 000 expressions/s); 9.7 s without reorganize and self-adjust |
 | memory | 205 MB | 488 MB allocated (2.03M nodes, 4.25M edges); 854 MB peak RSS |
-| matching | 1.6 ms | p50 24 ms with 313 000 matches per event |
+| matching | 1.6 ms | p50 21 ms with 323 000 matches per event |
 
-On the paper's own sharing profile libatree constructs about 4× more slowly
+On the paper's own sharing profile libatree constructs about 3.8× more slowly
 than the paper and uses 2.4× its memory. Matching is not comparable: 22% of
 the synthetic expressions match every event, which no ads workload does.
 What the work on this profile showed:
@@ -171,7 +182,7 @@ What the work on this profile showed:
   every leaf and literal with one allocation each, builds its copy in one
   arena.
 - **What remains is the per-leaf cost of a wide expression.** With 43
-  predicates per expression the insert spends most of its 8.9 µs on the
+  predicates per expression the insert spends most of its 7.9 µs on the
   leaves: in the profile of the previous version of this profile (54
   predicates per expression) normalization was 23%, the leaf hashes and
   probes 17% (each probe is three dependent cache misses: slot, node,

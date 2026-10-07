@@ -210,8 +210,8 @@ builds (-O2) with nothing else running; the paper's numbers are gcc -O3.
 
 Index size for the 100 000 expressions: 198 377 nodes, 435 624 edges, about
 500 bytes per expression (reorganize and self-adjust removed about 109 000
-edges). Inserts run at about 330 000 expressions/s with all optimizations
-on and 366 000/s with reorganize and self-adjust disabled; an insert looks each
+edges). Inserts run at about 380 000 expressions/s with all optimizations
+on and 414 000/s with reorganize and self-adjust disabled; an insert looks each
 subexpression up before building it, so a repeated subexpression costs one
 probe, and the candidate search for new nodes uses anchor lists. Deletes
 exceed 1 500 000/s.
@@ -223,14 +223,14 @@ p50) in a fifth of the memory, because the crate evaluates every predicate
 per event while libatree probes per-attribute indexes. **Against the
 paper's own synthetic curves** (Figures 11–13 at 1M expressions with the
 same parameters and sharing: about 0.65 ms, 5.3 s construction, 300 MB)
-libatree constructs in 4.4 s (228 000 expressions/s, parsing timed
+libatree constructs in 3.9 s (254 000 expressions/s, parsing timed
 separately), uses 411 MB allocated (1.37×) and matches in 2.3 ms p50 on
-events that match 27 500 expressions each, a density the paper's figure
+events that match 28 000 expressions each, a density the paper's figure
 cannot have had. On the paper's real-workload profile (`bench_synthetic
 --ads`: 1.39M expressions, 43 predicates each, every predicate used 69
-times) construction takes 12.4 s against the paper's 2.9 s, because the
+times) construction takes 11.0 s against the paper's 2.9 s, because the
 paper inserts pre-identified predicates with arithmetic identities while
-libatree hashes and probes every leaf from its literal. `docs/COMPARISON.md`
+libatree normalizes, hashes and probes every leaf from its literal. `docs/COMPARISON.md`
 has the per-component memory breakdown, the insert profile, the caveats and
 the reproduction commands.
 

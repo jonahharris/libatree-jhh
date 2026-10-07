@@ -62,6 +62,14 @@ All notable changes to this project are documented here. The format follows
   paper's sharing: search p50 4.6 ms → 2.3 ms (p99 9.1 → 4.0 ms); 100k:
   0.29 → 0.12 ms; insert throughput unchanged. About 97 ns per visited
   node.
+- A predicate leaf is hashed once: the structural hash computed when the
+  leaf is built, which normalization orders by, is the identity hash the
+  insert probes with and files a new leaf under; before, three functions
+  hashed the same bytes. Release build, interleaved A/B at 1M expressions
+  with the paper's sharing: inserts +9% (now 254 000/s, 3.9 s); the `--ads`
+  profile 112 000 → 127 000/s. `atree__pred_hash` and `atree__value_hash`
+  (by interned string id) are removed. Two further changes were measured
+  and declined, see `docs/COMPARISON.md`.
 - `bench_synthetic` reproduces the paper's sharing by default: and/or
   nodes average `--fanout` children (the paper's "average number of child
   nodes"; previously 2..fanout), predicates come from a pool sized for
