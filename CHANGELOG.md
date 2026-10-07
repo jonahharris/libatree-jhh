@@ -54,6 +54,14 @@ All notable changes to this project are documented here. The format follows
   paper's real workload (§6.2); `docs/COMPARISON.md` records that
   construction on that profile is 47× slower than the paper's figure and
   why (bottom-up build instead of Alg. 4's lookup-first insert).
+- Search no longer evaluates a woken OR node (under zero suppression only
+  a true child wakes it), sorts the matched ids with an LSD radix sort
+  instead of `qsort` (a scratch array in the report, grown with the match
+  vector), and finds a node's subscription list through a per-node slot
+  array instead of a hash map. Release build, 1M expressions with the
+  paper's sharing: search p50 4.6 ms → 2.3 ms (p99 9.1 → 4.0 ms); 100k:
+  0.29 → 0.12 ms; insert throughput unchanged. About 97 ns per visited
+  node.
 - `bench_synthetic` reproduces the paper's sharing by default: and/or
   nodes average `--fanout` children (the paper's "average number of child
   nodes"; previously 2..fanout), predicates come from a pool sized for

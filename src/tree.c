@@ -84,7 +84,7 @@ static void free_dag(atree_t *t)
     atree__u32vec_free(&t->mem, &t->leaves);
     atree__u32vec_free(&t->mem, &t->level_counts);
     atree__u64map_free(&t->mem, &t->subs);
-    atree__u64map_free(&t->mem, &t->node_subs);
+    atree__u32vec_free(&t->mem, &t->sub_slot);
     for (i = 0; i < t->sublists.len; i++) {
         atree__u64vec_free(&t->mem, &t->sublists.data[i]);
     }
@@ -148,7 +148,7 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     atree__u32vec_init(&t->leaves);
     atree__u32vec_init(&t->level_counts);
     atree__u64map_init(&t->subs);
-    atree__u64map_init(&t->node_subs);
+    atree__u32vec_init(&t->sub_slot);
     atree__sublistvec_init(&t->sublists);
     atree__u32vec_init(&t->free_sublists);
     atree__u64vec_init(&t->always);
@@ -256,7 +256,7 @@ static atree_status_t node_alloc(atree_t *t, atree__nid *out)
     atree__u32vec_init(&n.parents);
     if (t->free_nodes.len > 0) {
         *out = t->free_nodes.data[--t->free_nodes.len];
-        t->nodes.data[*out] = n;
+        t->nodes.data[*out] = n; /* sub_slot[*out] was reset to UINT32_MAX on detach */
         return ATREE_OK;
     }
     if (t->nodes.len >= ATREE_MAX_NODES) {
@@ -270,6 +270,12 @@ static atree_status_t node_alloc(atree_t *t, atree__nid *out)
         st = atree__u64vec_push(&t->mem, &t->csum, 0);
         if (st != ATREE_OK) {
             t->nodes.len--;
+            return st;
+        }
+        st = atree__u32vec_push(&t->mem, &t->sub_slot, UINT32_MAX);
+        if (st != ATREE_OK) {
+            t->nodes.len--;
+            t->csum.len--;
             return st;
         }
     }
@@ -638,11 +644,8 @@ static void pred_slot_release(atree_t *t, uint32_t slot)
 
 const struct atree__u64vec *atree__node_sublist(const atree_t *t, atree__nid id)
 {
-    uint32_t slot;
-    if (!atree__u64map_get(&t->node_subs, id, &slot)) {
-        return NULL;
-    }
-    return &t->sublists.data[slot];
+    uint32_t slot = t->sub_slot.data[id];
+    return slot == UINT32_MAX ? NULL : &t->sublists.data[slot];
 }
 
 static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
@@ -652,7 +655,8 @@ static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
     atree_status_t st;
     struct atree__node *n;
 
-    if (!atree__u64map_get(&t->node_subs, nid, &slot)) {
+    slot = t->sub_slot.data[nid];
+    if (slot == UINT32_MAX) {
         struct atree__u64vec empty;
         atree__u64vec_init(&empty);
         if (t->free_sublists.len > 0) {
@@ -665,17 +669,13 @@ static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
             }
             slot = t->sublists.len - 1;
         }
-        st = atree__u64map_put(&t->mem, &t->node_subs, nid, slot);
-        if (st != ATREE_OK) {
-            (void)atree__u32vec_push(&t->mem, &t->free_sublists, slot);
-            return st;
-        }
+        t->sub_slot.data[nid] = slot;
         fresh = true;
     }
     st = atree__u64vec_push(&t->mem, &t->sublists.data[slot], id);
     if (st != ATREE_OK) {
         if (fresh) {
-            atree__u64map_remove(&t->node_subs, nid);
+            t->sub_slot.data[nid] = UINT32_MAX;
             (void)atree__u32vec_push(&t->mem, &t->free_sublists, slot);
         }
         return st;
@@ -692,7 +692,8 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
     uint32_t pos;
     struct atree__node *n;
 
-    if (!atree__u64map_get(&t->node_subs, nid, &slot)) {
+    slot = t->sub_slot.data[nid];
+    if (slot == UINT32_MAX) {
         return false;
     }
     list = &t->sublists.data[slot];
@@ -704,7 +705,7 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
     n = node_at(t, nid);
     if (list->len == 0) {
         atree__u64vec_free(&t->mem, list);
-        atree__u64map_remove(&t->node_subs, nid);
+        t->sub_slot.data[nid] = UINT32_MAX;
         (void)atree__u32vec_push(&t->mem, &t->free_sublists, slot);
         n->flags &= (uint8_t)~ATREE_NODE_HAS_SUBS;
     }
@@ -2042,6 +2043,9 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
     memset(per_level.data, 0, (size_t)t->level_counts.len * sizeof *per_level.data);
     per_level.len = t->level_counts.len;
 
+    if (t->sub_slot.len != t->nodes.len || t->csum.len != t->nodes.len) {
+        FAIL("per-node side arrays out of step with the node slab", t->sub_slot.len, t->nodes.len);
+    }
     for (i = 0; i < t->nodes.len; i++) {
         const struct atree__node *n = &t->nodes.data[i];
         struct atree__probe probe;
@@ -2049,6 +2053,9 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
         uint32_t level = 0;
         uint32_t anchors = 0;
         if (n->kind == ATREE_NODE_FREE) {
+            if (t->sub_slot.data[i] != UINT32_MAX) {
+                FAIL("free node still owns a subscription list", i, t->sub_slot.data[i]);
+            }
             continue; /* a stranded slot (free-list push failed) is tolerated */
         }
         live++;

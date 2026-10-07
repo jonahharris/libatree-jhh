@@ -83,7 +83,7 @@ struct atree {
 
     /* Subscriptions. */
     struct atree__u64map subs;         /* atree_id_t -> node id / ATREE_SUB_*            */
-    struct atree__u64map node_subs;    /* node id -> index into sublists                  */
+    struct atree__u32vec sub_slot;     /* per node id: index into sublists, or UINT32_MAX */
     struct atree__sublistvec sublists; /* ids attached to a node                         */
     struct atree__u32vec free_sublists;
     struct atree__u64vec always; /* ids of constant-true subscriptions              */

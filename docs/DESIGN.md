@@ -171,10 +171,15 @@ script and checks shape, validity, search results and leak-freedom each
 time.
 
 **Matching.** Phase 1 (M4) evaluates every leaf and seeds the true ones at
-level 1. Phase 2 drains level queues bottom-up; an inner node is evaluated
-with bit lookups over its children (all at lower levels, hence final), a
-true node emits its subscriptions and enqueues its parents, and an AND
-parent is enqueued only by its access child. The access child is the child
+level 1. Phase 2 drains level queues bottom-up; an AND node is evaluated
+with bit lookups over its children (all at lower levels, hence final), an
+OR node is true the moment it is woken (only a true child wakes it), a
+true node emits its subscriptions (found through a per-node slot array
+into the subscription lists) and enqueues its parents, and an AND parent
+is enqueued only by its access child. The matched ids are sorted
+ascending by an LSD radix sort (11-bit digits, as many passes as the
+largest id needs) in a scratch array that grows with the match vector, so
+a warmed-up search still allocates nothing. The access child is the child
 with the lowest wake rank (equality/membership < ranges < AND < OR < bool <
 negated forms), ties broken by lower level, fewer children, lower id, so
 the choice is deterministic for a given insertion sequence. Figure 6 of the

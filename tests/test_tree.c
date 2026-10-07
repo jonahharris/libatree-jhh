@@ -592,6 +592,45 @@ static int collect(void *ctx, atree_id_t id)
     return 0;
 }
 
+/* Hundreds of matches with ids spanning 50 bits take the radix-sort path of
+ * the report (several digit passes); the result must still be ascending. */
+TEST(many_matches_sorted)
+{
+    atree_t *t = NULL;
+    atree_event_t *ev = NULL;
+    atree_report_t *rep = NULL;
+    const atree_id_t *m;
+    size_t i;
+    const size_t n = 700;
+    ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    for (i = 0; i < n; i++) {
+        /* unique (low bits are i), high bits scrambled so insertion order
+         * differs from id order, and one id above 2^50 */
+        atree_id_t id = ((atree_id_t)((i * 7919u) % 1009u) << 30) | (atree_id_t)i;
+        if (i == 3) {
+            id = (atree_id_t)1 << 50;
+        }
+        ASSERT_FALSE(ins(t, id, i % 2 == 0 ? "exchange_id > 0" : "exchange_id < 10 and private"));
+    }
+    ASSERT_OK(atree_event_create(t, &ev));
+    ASSERT_OK(atree_event_set_bool(ev, "private", true));
+    ASSERT_OK(atree_event_set_int(ev, "exchange_id", 5));
+    ASSERT_OK(atree_report_create(t, &rep));
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_EQ_U64(atree_report_count(rep), n);
+    m = atree_report_matches(rep);
+    for (i = 1; i < n; i++) {
+        ASSERT_TRUE(m[i - 1] < m[i]);
+    }
+    ASSERT_EQ_U64(m[n - 1], (atree_id_t)1 << 50);
+    ASSERT_OK(atree_search(t, ev, rep)); /* second run reuses the scratch */
+    ASSERT_EQ_U64(atree_report_count(rep), n);
+    atree_report_destroy(rep);
+    atree_event_destroy(ev);
+    atree_destroy(t);
+    return 0;
+}
+
 TEST(conveniences)
 {
     atree_t *t = NULL;
@@ -740,5 +779,6 @@ RUN_TEST(paper_figure_5_reorganize);
 RUN_TEST(paper_self_adjust);
 RUN_TEST(reorganize_hot_leaf_cover);
 RUN_TEST(conveniences);
+RUN_TEST(many_matches_sorted);
 RUN_TEST(rust_crate_example);
 TEST_MAIN_END()

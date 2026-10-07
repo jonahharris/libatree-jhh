@@ -199,19 +199,19 @@ expressions and are correspondingly faster.
 
 | Configuration | search p50 | search p99 | nodes visited / event | predicates evaluated / event |
 |---|---|---|---|---|
-| all optimizations on | 0.27 ms | 0.56 ms | 2 803 | 1 623 |
-| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 0.34 ms | 0.66 ms | 5 923 | 1 623 |
-| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 0.58 ms | 0.90 ms | 2 803 | 93 418 |
-| everything off (flags 15) | 0.71 ms | 1.11 ms | 6 746 | 93 418 |
-| all on, 5 pairs per event | 0.06 ms | 0.22 ms | 749 | 420 |
+| all optimizations on | 0.12 ms | 0.19 ms | 2 803 | 1 623 |
+| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 0.19 ms | 0.32 ms | 5 923 | 1 623 |
+| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 0.43 ms | 0.70 ms | 2 803 | 93 418 |
+| everything off (flags 15) | 0.53 ms | 0.73 ms | 6 746 | 93 418 |
+| all on, 5 pairs per event | 0.03 ms | 0.07 ms | 749 | 420 |
 
 All timings here and in `docs/COMPARISON.md` are from `make MODE=release`
 builds (-O2) with nothing else running; the paper's numbers are gcc -O3.
 
 Index size for the 100 000 expressions: 198 377 nodes, 435 624 edges, about
 500 bytes per expression (reorganize and self-adjust removed about 109 000
-edges). Inserts run at 343 000 expressions/s with all optimizations on and
-366 000/s with reorganize and self-adjust disabled; an insert looks each
+edges). Inserts run at about 330 000 expressions/s with all optimizations
+on and 366 000/s with reorganize and self-adjust disabled; an insert looks each
 subexpression up before building it, so a repeated subexpression costs one
 probe, and the candidate search for new nodes uses anchor lists. Deletes
 exceed 1 500 000/s.
@@ -224,7 +224,7 @@ per event while libatree probes per-attribute indexes. **Against the
 paper's own synthetic curves** (Figures 11–13 at 1M expressions with the
 same parameters and sharing: about 0.65 ms, 5.3 s construction, 300 MB)
 libatree constructs in 4.4 s (228 000 expressions/s, parsing timed
-separately), uses 416 MB allocated (1.39×) and matches in 4.4 ms p50 on
+separately), uses 411 MB allocated (1.37×) and matches in 2.3 ms p50 on
 events that match 27 500 expressions each, a density the paper's figure
 cannot have had. On the paper's real-workload profile (`bench_synthetic
 --ads`: 1.39M expressions, 43 predicates each, every predicate used 69

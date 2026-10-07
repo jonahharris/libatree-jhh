@@ -74,8 +74,8 @@ below are read off the curves at 1M expressions.
 | | Paper, A-Tree at 1M synthetic expressions (Figures 11a, 12a, 13a) | libatree `--paper` (1M expressions, 3000 events) |
 |---|---|---|
 | construction | about 5.3 s | 4.4 s (228 000 expressions/s; normalize + build, parsing timed separately) |
-| memory | about 300 MB | 416 MB allocated (1.87M nodes, 4.20M edges, 222 B per node); 781 MB peak RSS, which includes the benchmark's own predicate pool and the slab-doubling transient |
-| matching time | about 0.65 ms | p50 4.4 ms, p99 8.8 ms, with 27 500 matches, 23 600 nodes visited and 12 400 true predicates per event |
+| memory | about 300 MB | 411 MB allocated (1.87M nodes, 4.20M edges, 220 B per node); 764 MB peak RSS, which includes the benchmark's own predicate pool and the slab-doubling transient |
+| matching time | about 0.65 ms | p50 2.3 ms, p99 4.0 ms, with 27 500 matches, 23 600 nodes visited and 12 400 true predicates per event |
 | machine | 2.2 GHz Intel, 2018, gcc 7.4 -O3 | Apple M-series laptop, 2026, clang -O2 |
 
 What the comparison says:
@@ -97,12 +97,12 @@ What the comparison says:
   10%, the waker-region bookkeeping of the parent lists about 11%, the
   allocator about 5%; reorganize and self-adjust together are the measured
   14%.
-- **Memory is 1.39× the paper's at the same sharing.** The index has 856 000
+- **Memory is 1.37× the paper's at the same sharing.** The index has 856 000
   leaves for 646 000 distinct predicates: the 210 000 extra leaves are the
   negated variants that NOT push-down creates (the paper pushes NOT to the
   leaves too, §5.2.1, so it carries them as well). The 1.01M inner nodes
   match the paper's 4.39M subexpression instances at 4.33× sharing. The
-  rest is per-node cost, 222 B against an implied 180 B; the breakdown
+  rest is per-node cost, 220 B against an implied 180 B; the breakdown
   below shows where it goes. Peak RSS exceeds the allocated bytes because
   the node slab doubles from 134 MB to 268 MB at 2.1M nodes with both
   copies resident, and the identity tables rehash the same way.
@@ -111,10 +111,16 @@ What the comparison says:
   visiting 23 600 nodes in 0.65 ms on 2018 hardware would be 28 ns per
   node, so the paper's events must be far sparser (it does not describe its
   event generator beyond the pairs per event). Per visited node libatree
-  spends about 185 ns, of which the final sort of the matched ids is about
-  20%, re-evaluating woken OR nodes (always true under zero suppression)
-  about 7% and reading each woken parent only for its level about 19%. On
-  a sparse event (`--event-size 5`) at 100k expressions the p50 is 59 µs.
+  spends about 97 ns. It was 185 ns before three search changes measured
+  on this workload: the matched ids are radix-sorted instead of `qsort`ed
+  (the sort had been a fifth of the search at 27 500 matches), a woken OR
+  node is no longer re-evaluated (under zero suppression only a true child
+  wakes it), and a node's subscription list is found through a per-node
+  slot array instead of a hash map; together p50 went from 4.6 ms to
+  2.3 ms at 1M and from 0.29 ms to 0.12 ms at 100k, with insert throughput
+  unchanged. What remains is reading each woken parent (one cache miss per
+  edge followed), the AND evaluations and phase 1 over the scan lists. On a
+  sparse event (`--event-size 5`) at 100k expressions the p50 is 28 µs.
 
 The previous revision of this comparison used a generator with 2–4
 children per node, 30% reuse and no predicate pool (predicates shared 5.6
@@ -144,7 +150,7 @@ without parsing, as in the paper, whose expressions are already structured.
 | subexpression sharing | 28× / 11× / 7.5× by level | 23.7× overall |
 | construction | 2.9 s (1.4 s without reorganize and self-adjust) | 12.4 s (112 000 expressions/s); 10.8 s without reorganize and self-adjust |
 | memory | 205 MB | 488 MB allocated (2.03M nodes, 4.25M edges); 854 MB peak RSS |
-| matching | 1.6 ms | p50 46 ms with 313 000 matches per event |
+| matching | 1.6 ms | p50 24 ms with 313 000 matches per event |
 
 On the paper's own sharing profile libatree constructs about 4× more slowly
 than the paper and uses 2.4× its memory. Matching is not comparable: 22% of
@@ -197,7 +203,7 @@ internal structures:
 | identity table | 2.1 MB | 2.4% | 6.1 |
 | predicate list operands | 2.1 MB | 2.4% | 6.1 |
 | leaf positions + leaf list | 2.1 MB | 2.4% | 6.1 |
-| node → subscriptions map | 1.7 MB | 1.9% | 5.0 |
+| node → subscription list (then a hash map, now a 4 B per-node slot array) | 1.7 MB | 1.9% | 5.0 |
 | content table | 1.0 MB | 1.2% | 3.1 |
 | string table, attributes, rest | 0.1 MB | 0.2% | 0.4 |
 

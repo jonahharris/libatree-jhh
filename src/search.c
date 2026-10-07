@@ -30,6 +30,8 @@ struct atree_report {
     struct atree__u32vec *queues; /* indexed by level; [0] unused */
     uint32_t nqueues;
     struct atree__u64vec matches;
+    uint64_t *sort_tmp; /* radix sort scratch, matches.cap entries */
+    uint32_t sort_cap;
     atree_report_stats_t stats;
 };
 
@@ -90,6 +92,9 @@ void atree_report_destroy(atree_report_t *r)
         atree__free_array(&r->mem, r->queues, r->nqueues, sizeof *r->queues);
     }
     atree__u64vec_free(&r->mem, &r->matches);
+    if (r->sort_cap > 0) {
+        atree__free_array(&r->mem, r->sort_tmp, r->sort_cap, sizeof *r->sort_tmp);
+    }
     mem = r->mem;
     atree__free(&mem, r, sizeof *r);
 }
@@ -177,6 +182,74 @@ static int cmp_u64(const void *pa, const void *pb)
     uint64_t a = *(const uint64_t *)pa;
     uint64_t b = *(const uint64_t *)pb;
     return (a > b) - (a < b);
+}
+
+/* The report promises ids in ascending order. Dense events match tens of
+ * thousands of expressions, where qsort was a fifth of the search time;
+ * an LSD radix sort over 11-bit digits runs only the passes the largest id
+ * needs (three for ids below 2^33). The scratch array grows with the match
+ * vector, so a warmed-up search still makes no allocator call. */
+#define RADIX_BITS 11u
+#define RADIX_SIZE (1u << RADIX_BITS)
+#define RADIX_MIN 128u /* below this qsort is cheaper than the histogram passes */
+
+static atree_status_t sort_matches(atree_report_t *r)
+{
+    uint64_t *a = r->matches.data;
+    uint64_t *b;
+    uint32_t n = r->matches.len;
+    uint64_t bits = 0;
+    unsigned shift;
+    uint32_t i;
+    if (n < 2) {
+        return ATREE_OK;
+    }
+    if (n < RADIX_MIN) {
+        qsort(a, n, sizeof *a, cmp_u64);
+        return ATREE_OK;
+    }
+    if (r->sort_cap < r->matches.cap) {
+        uint64_t *tmp;
+        if (r->sort_cap == 0) {
+            tmp = atree__alloc_array(&r->mem, r->matches.cap, sizeof *tmp);
+        } else {
+            tmp = atree__realloc_array(&r->mem, r->sort_tmp, r->sort_cap, r->matches.cap,
+                                       sizeof *tmp);
+        }
+        if (tmp == NULL) {
+            return ATREE_ERR_NOMEM;
+        }
+        r->sort_tmp = tmp;
+        r->sort_cap = r->matches.cap;
+    }
+    b = r->sort_tmp;
+    for (i = 0; i < n; i++) {
+        bits |= a[i];
+    }
+    for (shift = 0; shift < 64 && (bits >> shift) != 0; shift += RADIX_BITS) {
+        uint32_t count[RADIX_SIZE];
+        uint32_t sum = 0;
+        uint64_t *swap;
+        memset(count, 0, sizeof count);
+        for (i = 0; i < n; i++) {
+            count[(a[i] >> shift) & (RADIX_SIZE - 1)]++;
+        }
+        for (i = 0; i < RADIX_SIZE; i++) {
+            uint32_t c = count[i];
+            count[i] = sum;
+            sum += c;
+        }
+        for (i = 0; i < n; i++) {
+            b[count[(a[i] >> shift) & (RADIX_SIZE - 1)]++] = a[i];
+        }
+        swap = a;
+        a = b;
+        b = swap;
+    }
+    if (a != r->matches.data) {
+        memcpy(r->matches.data, a, (size_t)n * sizeof *a);
+    }
+    return ATREE_OK;
 }
 
 static atree_status_t wake_range(atree_report_t *r, const atree_t *t, const struct atree__node *n,
@@ -267,23 +340,18 @@ static atree_status_t phase1_scan(atree_report_t *r, const atree_t *t, const atr
     return ATREE_OK;
 }
 
-static bool evaluate_inner(const atree_report_t *r, const struct atree__node *n)
+/* An AND node is true when every child is; lower levels are final by the
+ * time its level is drained. An OR node needs no evaluation: under zero
+ * suppression (§5.2.1) only a true child ever wakes it. */
+static bool all_children_true(const atree_report_t *r, const struct atree__node *n)
 {
     uint32_t i;
-    if (n->kind == ATREE_NODE_AND) {
-        for (i = 0; i < n->children.len; i++) {
-            if (!bit_get(r->is_true, n->children.data[i])) {
-                return false;
-            }
-        }
-        return true;
-    }
     for (i = 0; i < n->children.len; i++) {
-        if (bit_get(r->is_true, n->children.data[i])) {
-            return true;
+        if (!bit_get(r->is_true, n->children.data[i])) {
+            return false;
         }
     }
-    return false;
+    return true;
 }
 
 /* Runs a full search; the lock is held by the caller. */
@@ -314,18 +382,15 @@ static atree_status_t search_locked(atree_report_t *r, const atree_t *t, const a
             atree__nid id = q->data[i];
             const struct atree__node *n = &t->nodes.data[id];
             if (level > 1) {
-                bool v = evaluate_inner(r, n);
                 r->stats.nodes_visited++;
                 if (n->kind == ATREE_NODE_AND) {
                     r->stats.and_woken++;
-                    if (v) {
-                        r->stats.and_true++;
+                    if (!all_children_true(r, n)) {
+                        continue; /* zero suppression: false is never propagated */
                     }
+                    r->stats.and_true++;
                 } else {
                     r->stats.or_visited++;
-                }
-                if (!v) {
-                    continue; /* zero suppression: false is never propagated */
                 }
                 bit_set(r->is_true, id);
             }
@@ -340,8 +405,10 @@ static atree_status_t search_locked(atree_report_t *r, const atree_t *t, const a
         r->matches.len = 0;
         return st;
     }
-    if (r->matches.len > 1) {
-        qsort(r->matches.data, r->matches.len, sizeof *r->matches.data, cmp_u64);
+    st = sort_matches(r);
+    if (st != ATREE_OK) {
+        r->matches.len = 0;
+        return st;
     }
     r->stats.matches = r->matches.len;
     return ATREE_OK;
