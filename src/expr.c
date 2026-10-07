@@ -431,7 +431,19 @@ atree_status_t atree__expr_new_nary(enum atree__expr_kind kind, atree_expr_t **c
             depth = children[i]->depth;
         }
     }
-    e->depth = depth == UINT32_MAX ? UINT32_MAX : depth + 1;
+    /* The depth limit is enforced here as well as at parse and normalize
+     * time: free, print and the reference evaluator recurse over the
+     * caller's tree, so a builder must not be able to make one deeper
+     * than the parser would (max_depth nested connectives over a leaf). */
+    if (depth > tree->max_depth) {
+        atree__free_array(&e->mem, e->children, n, sizeof *e->children);
+        e->children = NULL;
+        e->nchildren = 0; /* the children stay the caller's until success */
+        atree_expr_free(e);
+        free_children_array(children, n);
+        return ATREE_ERR_TOO_DEEP;
+    }
+    e->depth = depth + 1;
     e->hash = compute_hash(e);
     *out = e;
     return ATREE_OK;

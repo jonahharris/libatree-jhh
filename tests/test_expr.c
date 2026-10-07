@@ -408,6 +408,16 @@ TEST(depth_limit)
     ASSERT_EQ_U64(out->kind, ATREE_EXPR_PRED); /* ten negations cancel */
     atree_expr_free(out);
     atree_expr_free(e);
+    /* The builders refuse to nest more than max_depth (default 64)
+     * connectives over a leaf, as the parser does, so free, print and eval
+     * can never recurse deeper than that. */
+    e = atree_expr_var(t, "private");
+    for (i = 0; i < 64; i++) {
+        e = atree_expr_not(e);
+    }
+    ASSERT_NOT_NULL(e);
+    ASSERT_EQ_U64(e->depth, 65);
+    ASSERT_NULL(atree_expr_not(e)); /* frees e */
     atree_destroy(t);
     return 0;
 }

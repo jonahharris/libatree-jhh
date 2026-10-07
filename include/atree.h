@@ -262,8 +262,9 @@ ATREE_API atree_expr_t *atree_expr_true(const atree_t *tree);
 ATREE_API atree_expr_t *atree_expr_false(const atree_t *tree);
 
 /* Connectives take ownership of their children (freed with the result). A
- * NULL child, n == 0, or out of memory frees everything passed in and yields
- * NULL, so builder chains need only one NULL check at the end. */
+ * NULL child, n == 0, out of memory, or a result nested deeper than the
+ * tree's max_depth frees everything passed in and yields NULL, so builder
+ * chains need only one NULL check at the end. */
 ATREE_API atree_expr_t *atree_expr_and(atree_expr_t **children, size_t n);
 ATREE_API atree_expr_t *atree_expr_or(atree_expr_t **children, size_t n);
 ATREE_API atree_expr_t *atree_expr_not(atree_expr_t *child);

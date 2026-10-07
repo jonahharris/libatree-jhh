@@ -16,6 +16,12 @@ All notable changes to this project are documented here. The format follows
   as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
 
 ### Fixed
+- The expression builders (`atree_expr_not`, `atree_expr_and`, ...) accepted
+  any nesting, so a deep builder-made expression overflowed the stack in
+  `atree_expr_free`, `atree_expr_print` or `atree_expr_eval`; only parse
+  and normalize enforced `max_depth`. A builder now yields NULL, like it
+  does on a NULL child, when the result would nest more than `max_depth`
+  connectives over a leaf, which is the parser's limit.
 - A report's bitsets grew to the exact node count on every search that
   found the tree larger, so a reader on a tree under steady writes copied
   two bitsets of nodes/8 bytes every few inserts; they now grow
