@@ -109,6 +109,16 @@ if(ATREE_BUILD_BENCH)
     endforeach()
 endif()
 
+# ---- tools -------------------------------------------------------------------
+
+# atree_shell uses POSIX sockets, so it is not built on Windows.
+option(ATREE_BUILD_TOOLS "Build the atree_shell tool" ON)
+if(ATREE_BUILD_TOOLS AND NOT WIN32)
+    add_executable(atree_shell tools/atree_shell.c)
+    target_link_libraries(atree_shell PRIVATE atree_static)
+    target_compile_options(atree_shell PRIVATE ${ATREE_WARNINGS})
+endif()
+
 # ---- install -----------------------------------------------------------------
 
 include(GNUInstallDirs)

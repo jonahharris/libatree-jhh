@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `tools/atree_shell`: an interactive shell, server and client for playing
+  with the library. Commands define attributes, register continuous
+  queries (`SUBSCRIBE id expr`), ingest events (`EVENT a=v;b=v`, answered
+  with the matches, the time and the search counters), load the
+  `bench_file` text formats, and print stats, validation and Graphviz. As
+  a server (`--listen PORT` or a Unix socket path) it serves many clients
+  from one tree and sends `NOTIFY id event` to the client that owns a
+  matched query; `--connect` is the matching client. `make tools` builds
+  it, `make check` runs `tests/shell_smoke.sh`. The text-format parsers
+  moved from `bench_file.c` to `bench/bench_format.h`.
 - `atree_config_t.max_expr_nodes` (default 8192): the number of nodes a
   normalized expression may have. XOR/XNOR expand to AND/OR and double per
   nesting level, so a chain of 20 XORs, depth 21 and well inside

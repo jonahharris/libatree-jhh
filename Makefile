@@ -72,11 +72,15 @@ BENCH_BINS := $(patsubst bench/%.c,$(BUILD)/bench/%,$(BENCH_SRCS))
 FUZZ_SRCS := $(wildcard fuzz/*.c)
 FUZZ_BINS := $(patsubst fuzz/%.c,$(BUILD)/fuzz/%,$(FUZZ_SRCS))
 
+TOOL_SRCS := $(wildcard tools/*.c)
+TOOL_BINS := $(patsubst tools/%.c,$(BUILD)/tools/%,$(TOOL_SRCS))
+
 FORMAT_FILES := $(wildcard include/*.h src/*.c src/*.h tests/*.c tests/*.h tests/*.cpp \
-                           bench/*.c bench/*.h fuzz/*.c extras/*.h)
+                           bench/*.c bench/*.h fuzz/*.c extras/*.h tools/*.c)
 
 .PHONY: all static shared check check-asan check-ubsan check-tsan check-valgrind \
-        check-header check-fuzz-compile bench bench-check fuzz format format-check install clean help
+        check-header check-fuzz-compile check-tools bench bench-check tools fuzz format \
+        format-check install clean help
 
 all: static shared
 
@@ -106,7 +110,7 @@ $(BUILD)/tests/%: tests/%.c $(STLIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MF $@.d -o $@ $< $(STLIB) $(LDFLAGS) $(TEST_LDFLAGS)
 
-check: $(TEST_BINS) check-header check-fuzz-compile
+check: $(TEST_BINS) check-header check-fuzz-compile check-tools
 	@status=0; for t in $(TEST_BINS); do \
 	    echo "RUN $$t"; $$t || status=1; \
 	done; \
@@ -168,6 +172,22 @@ $(BUILD)/bench/%: bench/%.c $(STLIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) -std=c99 -O2 -g $(WARNINGS) $(EXTRA_CFLAGS) -o $@ $< $(STLIB) $(LDFLAGS) -lm
 
+# ---- tools -------------------------------------------------------------------
+
+# atree_shell is POSIX (sockets); it is built and smoke-tested wherever the
+# Makefile runs, which excludes MSVC (CMake skips it on Windows).
+$(BUILD)/tools/%: tools/%.c $(STLIB) bench/bench_format.h bench/bench_clock.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) -std=c99 -O2 -g $(WARNINGS) $(EXTRA_CFLAGS) -o $@ $< $(STLIB) $(LDFLAGS)
+
+tools: $(TOOL_BINS)
+	@echo "built: $(TOOL_BINS)"
+	@echo "run:   $(BUILD)/tools/atree_shell            (HELP lists the commands)"
+	@echo "       $(BUILD)/tools/atree_shell --listen 7777   and   --connect localhost 7777"
+
+check-tools: $(TOOL_BINS)
+	tests/shell_smoke.sh $(BUILD)/tools/atree_shell
+
 bench: $(BENCH_BINS)
 	@echo "built: $(BENCH_BINS)"
 	@echo "run:   $(BUILD)/bench/bench_synthetic [--quick|--paper] [--json] [--check bench/baseline.json]"
@@ -208,7 +228,7 @@ clean:
 
 help:
 	@echo "targets: all check check-asan check-ubsan check-tsan check-valgrind check-header"
-	@echo "         bench fuzz format format-check install clean"
+	@echo "         tools check-tools bench fuzz format format-check install clean"
 	@echo "vars:    CC CXX MODE=debug|release WERROR=1|0 BUILD=dir PREFIX=path EXTRA_CFLAGS EXTRA_LDFLAGS"
 
 -include $(DEPS) $(TEST_DEPS)

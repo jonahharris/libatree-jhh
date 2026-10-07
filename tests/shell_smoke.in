@@ -1,0 +1,24 @@
+# attributes, then continuous queries, then events
+DEFINE price int
+DEFINE country string
+DEFINE tags string_list
+DEFINE score float
+subscribe 1 price > 10 and country in ["US", "CA"]
+SUBSCRIBE 2 not (price > 10) or tags one of ["a"]
+SUBSCRIBE 3 score between 0.5 and 1.5 and country = 'DE'
+SUBSCRIBE 3 price = 1
+PARSE price > 10 and country in ["US","CA"]
+EVENT price=12;country="US"
+EVENT price=5;tags=["a","b"]
+EVENT score=1.0;country="DE";price=99
+EVENT price=5;bogus=1
+SUBSCRIBE x bad
+SUBSCRIBE 4 price >
+UNSUBSCRIBE 2
+UNSUBSCRIBE 2
+COUNT
+STATS
+VALIDATE
+DOT
+BOGUS
+QUIT

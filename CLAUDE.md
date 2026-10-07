@@ -6,6 +6,9 @@ expressions. Read `PLAN.md` before changing anything: it defines scope, the
 public API, internal design, and the milestone order. `docs/DESIGN.md` must
 stay in sync with the code.
 
+`tools/` holds POSIX programs built on the library (sockets allowed there,
+never in `src/`); `make check` smoke-tests them through `tests/shell_smoke.sh`.
+
 `reference/` is **read-only input** (paper, Rust crate, be-tree, bplus-tree,
 an embedded C A-Tree). Never modify it, never copy code from it verbatim
 (different licenses and quality bars); re-derive and cite the idea in a
@@ -21,6 +24,7 @@ make check-ubsan     # tests under UBSan only (gcc)
 make check-tsan      # tests/test_threads under -fsanitize=thread (clang)
 make check-valgrind  # tests under valgrind --error-exitcode=1 --leak-check=full
 make bench           # build benchmarks (bench/ output explains how to run)
+make tools           # tools/atree_shell: stdin REPL, --listen PORT|PATH server, --connect client
 make fuzz            # build libFuzzer harness (clang only)
 make format          # clang-format in place;  make format-check in CI
 cmake -B build && cmake --build build && ctest --test-dir build   # CMake path (also MSVC)

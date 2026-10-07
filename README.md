@@ -94,6 +94,33 @@ cmake --install build --prefix /usr/local        # installs atreeConfig.cmake an
 Link with `-latree` (`pkg-config --cflags --libs atree`), or in CMake
 `find_package(atree)` and `target_link_libraries(app atree::atree)`.
 
+## Trying it out
+
+`make tools` builds `atree_shell`, a line-oriented shell over the library.
+Define attributes, register continuous queries and feed events; every event
+answers with the matching ids, the time and the search counters:
+
+```
+$ build/tools/atree_shell
+DEFINE price int
+DEFINE country string
+SUBSCRIBE 1 price > 10 and country in ["US", "CA"]
+SUBSCRIBE 2 not (price > 10) or country = 'DE'
+EVENT price=12;country="US"
+MATCH 1: 1
+TIME 1.2 us
+STATS predicates_evaluated=2 predicates_true=2 nodes_visited=1 and_woken=1 and_true=1 or_visited=0
+OK
+```
+
+`HELP` lists the commands (`PARSE`, `UNSUBSCRIBE`, `LOAD DEFS|EXPRS|EVENTS`
+for the `bench_file` text formats, `STATS`, `VALIDATE`, `DOT`). The same
+program is a server, `atree_shell --listen 7777` (or a Unix socket path),
+serving many clients from one tree: a client that subscribed an id receives
+`NOTIFY id event` whenever another client's event matches it, and its
+queries end with its connection. `atree_shell --connect localhost 7777`
+is the client. The shell is POSIX only; the library itself is not.
+
 ## Expression language
 
 Compatible with the Rust `a-tree` crate's DSL, with `xor`, `xnor`,
@@ -257,7 +284,8 @@ allocator calls.
 - `src/` — implementation; `docs/DESIGN.md` explains it module by module.
 - `tests/` — unit, differential, allocation-failure, thread and work-count
   tests; `fuzz/` — libFuzzer harness and corpus; `bench/` — benchmarks.
-- `extras/` — header-only lock adapters.
+- `extras/` — header-only lock adapters; `tools/` — `atree_shell`, the
+  interactive shell, server and client (POSIX).
 - `PLAN.md` — the design and plan the library was built from; `CLAUDE.md` —
   the coding rules it is held to.
 

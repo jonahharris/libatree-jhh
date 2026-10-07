@@ -1,0 +1,40 @@
+OK price int
+OK country string
+OK tags string_list
+OK score float
+OK subscribed 1
+OK subscribed 2
+OK subscribed 3
+ERR duplicate subscription id: subscription id already present
+price > 10 and country in ["CA", "US"]
+OK
+MATCH 1: 1
+STATS predicates_evaluated=2 predicates_true=2 nodes_visited=1 and_woken=1 and_true=1 or_visited=0
+OK
+MATCH 1: 2
+STATS predicates_evaluated=2 predicates_true=2 nodes_visited=1 and_woken=0 and_true=0 or_visited=1
+OK
+MATCH 1: 3
+STATS predicates_evaluated=4 predicates_true=4 nodes_visited=1 and_woken=1 and_true=1 or_visited=0
+OK
+ERR bad item 'bogus': unknown attribute or a value of the wrong type
+ERR usage: SUBSCRIBE id expression
+ERR syntax error: expected a number or string literal after comparison operator (at offset 7)
+OK unsubscribed 2
+ERR not found
+OK 2
+subscriptions 2
+nodes 7
+leaves 5
+edges 5
+max_level 2
+indexed_leaves 5
+scanned_leaves 0
+reorganized 0
+self_adjusted 0
+strings 4
+OK
+OK valid
+OK
+ERR unknown command 'BOGUS' (HELP lists them)
+OK bye
