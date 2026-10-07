@@ -511,10 +511,11 @@ struct check {
     int bad;
 };
 
-static void check_fail(struct check *c, const char *what, unsigned long a, unsigned long b)
+static void check_fail(struct check *c, const char *what, unsigned long long a,
+                       unsigned long long b)
 {
     if (!c->bad && c->msg != NULL && c->cap > 0) {
-        (void)snprintf(c->msg, c->cap, "index: %s (%lu, %lu)", what, a, b);
+        (void)snprintf(c->msg, c->cap, "index: %s (%llu, %llu)", what, a, b);
     }
     c->bad = 1;
 }
@@ -583,7 +584,7 @@ static void check_buckets(struct check *c, const struct atree__u64map *map, enum
                 has = kk == key;
             }
             if (!has) {
-                check_fail(c, "leaf under a key its operand lacks", id, (unsigned long)key);
+                check_fail(c, "leaf under a key its operand lacks", id, (unsigned long long)key);
                 return;
             }
             c->count[id]++;
@@ -678,8 +679,8 @@ atree_status_t atree__index_check(const struct atree *t, struct atree__mem *scra
         }
     }
     if (!c.bad && (indexed != t->index.indexed || scanned != t->index.scanned)) {
-        check_fail(&c, "index counters out of date", (unsigned long)indexed,
-                   (unsigned long)scanned);
+        check_fail(&c, "index counters out of date", (unsigned long long)indexed,
+                   (unsigned long long)scanned);
     }
     if (c.count != NULL) {
         atree__free_array(scratch, c.count, t->nodes.len, sizeof *c.count);

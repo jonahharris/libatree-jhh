@@ -1858,6 +1858,8 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
     } else {
         struct journalvec *journal = &t->journal;
         atree__nid root = ATREE_NID_NONE;
+        uint64_t reorganized = t->reorganized;
+        uint64_t skipped = t->adjust_candidates_skipped;
         journal->len = 0;
         /* Rollback must not fail: size the cascade worklist up front. */
         st = atree__u32vec_reserve(&t->mem, &t->worklist, t->nodes.len + expr_node_count(norm) + 1);
@@ -1878,6 +1880,8 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
         }
         if (st != ATREE_OK) {
             rollback(t, journal);
+            t->reorganized = reorganized; /* rollback undoes self_adjusted itself */
+            t->adjust_candidates_skipped = skipped;
         }
         journal_commit(t, journal);
     }
@@ -2004,17 +2008,17 @@ void atree_stats(const atree_t *t, atree_stats_t *out)
 
 /* ---- validation --------------------------------------------------------- */
 
-static int msgf(char *msg, size_t cap, const char *what, unsigned long a, unsigned long b)
+static int msgf(char *msg, size_t cap, const char *what, unsigned long long a, unsigned long long b)
 {
     if (msg != NULL && cap > 0) {
-        (void)snprintf(msg, cap, "%s (node %lu, %lu)", what, a, b);
+        (void)snprintf(msg, cap, "%s (node %llu, %llu)", what, a, b);
     }
     return 1;
 }
 
 #define FAIL(what, a, b)                                                                           \
     do {                                                                                           \
-        (void)msgf(msg, cap, (what), (unsigned long)(a), (unsigned long)(b));                      \
+        (void)msgf(msg, cap, (what), (unsigned long long)(a), (unsigned long long)(b));            \
         st = ATREE_ERR_CORRUPT;                                                                    \
         goto done;                                                                                 \
     } while (0)
@@ -2079,7 +2083,8 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
         if (subs != NULL) {
             for (j = 0; j < subs->len; j++) {
                 if (!atree__u64map_get(&t->subs, subs->data[j], &val) || val != i) {
-                    FAIL("subscription not mapped back to node", i, (unsigned long)subs->data[j]);
+                    FAIL("subscription not mapped back to node", i,
+                         (unsigned long long)subs->data[j]);
                 }
             }
             subs_on_nodes += subs->len;

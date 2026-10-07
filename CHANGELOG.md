@@ -16,6 +16,20 @@ All notable changes to this project are documented here. The format follows
   as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
 
 ### Fixed
+- A report's bitsets grew to the exact node count on every search that
+  found the tree larger, so a reader on a tree under steady writes copied
+  two bitsets of nodes/8 bytes every few inserts; they now grow
+  geometrically, and a failure while growing can no longer leave the two
+  arrays at different sizes. `test_perf` gates the allocator calls of 600
+  searches interleaved with inserts.
+- A rolled-back insert left `reorganized` and `adjust_candidates_skipped`
+  advanced; they are restored with the rest of the state.
+- `atree_validate` diagnostics printed 64-bit ids through `unsigned long`,
+  which truncates on 64-bit Windows.
+- `atree_expr_eval` read the tree's string table without taking the read
+  lock while every other read path did; a concurrent insert interning a
+  new literal could rehash the table under it. It now takes the lock once
+  around the whole evaluation, and the header says so.
 - Rolling back a failed insert re-filed a node that self-adjust had
   re-keyed under its old identity hash with an insert that could need to
   grow the table, and discarded the result; after an out-of-memory failure
@@ -36,6 +50,9 @@ All notable changes to this project are documented here. The format follows
   steady size they no longer grow without bound (20 000 cycles over 200
   live expressions grew them from 2048 to 16384 slots). `test_perf` gates
   it: bytes allocated after a long churn equal those after a short one.
+- The benchmark clock on macOS is the scaled mach clock (41 ns
+  resolution) instead of `CLOCK_MONOTONIC`, which has microsecond
+  resolution there; per-insert and small-search timings were quantized.
 ### Changed
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table

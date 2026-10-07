@@ -13,8 +13,6 @@
 #include "hash.h"
 #include "vec.h"
 
-ATREE_VEC_DEFINE(exprvec, atree_expr_t *);
-
 /* ---- node lifecycle ----------------------------------------------------- */
 
 static atree_expr_t *node_new(const atree_t *tree, enum atree__expr_kind kind)
@@ -1357,15 +1355,12 @@ static atree_tri_t eval_pred(const atree_expr_t *e, const atree_event_t *ev)
     return r;
 }
 
-atree_tri_t atree_expr_eval(const atree_expr_t *e, const atree_event_t *ev)
+static atree_tri_t eval_rec(const atree_expr_t *e, const atree_event_t *ev)
 {
     uint32_t i;
     atree_tri_t r;
     atree_tri_t c;
 
-    if (e == NULL || ev == NULL || ev->tree != e->tree) {
-        return ATREE_UNDEFINED;
-    }
     switch ((enum atree__expr_kind)e->kind) {
     case ATREE_EXPR_TRUE:
         return ATREE_TRUE;
@@ -1374,11 +1369,11 @@ atree_tri_t atree_expr_eval(const atree_expr_t *e, const atree_event_t *ev)
     case ATREE_EXPR_PRED:
         return eval_pred(e, ev);
     case ATREE_EXPR_NOT:
-        return tri_not(atree_expr_eval(e->children[0], ev));
+        return tri_not(eval_rec(e->children[0], ev));
     case ATREE_EXPR_AND:
         r = ATREE_TRUE;
         for (i = 0; i < e->nchildren; i++) {
-            c = atree_expr_eval(e->children[i], ev);
+            c = eval_rec(e->children[i], ev);
             if (c == ATREE_FALSE) {
                 return ATREE_FALSE;
             }
@@ -1390,7 +1385,7 @@ atree_tri_t atree_expr_eval(const atree_expr_t *e, const atree_event_t *ev)
     case ATREE_EXPR_OR:
         r = ATREE_FALSE;
         for (i = 0; i < e->nchildren; i++) {
-            c = atree_expr_eval(e->children[i], ev);
+            c = eval_rec(e->children[i], ev);
             if (c == ATREE_TRUE) {
                 return ATREE_TRUE;
             }
@@ -1401,8 +1396,8 @@ atree_tri_t atree_expr_eval(const atree_expr_t *e, const atree_event_t *ev)
         return r;
     case ATREE_EXPR_XOR:
     case ATREE_EXPR_XNOR: {
-        atree_tri_t a = atree_expr_eval(e->children[0], ev);
-        atree_tri_t b = atree_expr_eval(e->children[1], ev);
+        atree_tri_t a = eval_rec(e->children[0], ev);
+        atree_tri_t b = eval_rec(e->children[1], ev);
         bool x;
         if (a == ATREE_UNDEFINED || b == ATREE_UNDEFINED) {
             return ATREE_UNDEFINED;
@@ -1416,6 +1411,21 @@ atree_tri_t atree_expr_eval(const atree_expr_t *e, const atree_event_t *ev)
     default:
         return ATREE_UNDEFINED;
     }
+}
+
+/* Leaves resolve their string literals through the tree's string table,
+ * which a concurrent insert may grow, so the read lock is held for the
+ * whole evaluation (once: the recursion is internal). */
+atree_tri_t atree_expr_eval(const atree_expr_t *e, const atree_event_t *ev)
+{
+    atree_tri_t r;
+    if (e == NULL || ev == NULL || ev->tree != e->tree) {
+        return ATREE_UNDEFINED;
+    }
+    atree__rdlock(e->tree);
+    r = eval_rec(e, ev);
+    atree__rdunlock(e->tree);
+    return r;
 }
 
 /* ---- printing ----------------------------------------------------------- */

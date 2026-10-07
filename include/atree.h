@@ -288,7 +288,10 @@ typedef enum atree_tri { ATREE_FALSE = 0, ATREE_TRUE = 1, ATREE_UNDEFINED = 2 } 
 
 /* Reference (brute-force) evaluation of one expression against one event with
  * the paper's semantics (§3.2, Table 2). The tree matches a subscription iff
- * this returns ATREE_TRUE. Exported because it is useful for callers' tests. */
+ * this returns ATREE_TRUE. Exported because it is useful for callers' tests.
+ * A read path: takes the tree's read lock (string literals are resolved
+ * through the tree), so do not call it from a callback that runs under the
+ * lock. */
 ATREE_API atree_tri_t atree_expr_eval(const atree_expr_t *expr, const atree_event_t *event);
 
 /* ------------------------------------------------------------------------ */

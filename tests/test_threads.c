@@ -215,10 +215,26 @@ static void *writer_churn(void *arg)
         if (atree_insert_expr(sh->tree, id, sh->exprs[pick], NULL) != ATREE_OK) {
             w->failures++;
         }
+        /* A literal the tree has never seen grows the string table under
+         * the readers (soundness is unaffected: the new id matches only
+         * events carrying that literal, which none does). */
+        if (i % 8 == 0) {
+            char text[48];
+            snprintf(text, sizeof text, "s0 = 'fresh-%d'", i);
+            if (i > 0 && atree_delete(sh->tree, NEXPR + 1) != ATREE_OK) {
+                w->failures++;
+            }
+            if (atree_insert(sh->tree, NEXPR + 1, text, SIZE_MAX, NULL) != ATREE_OK) {
+                w->failures++;
+            }
+        }
         w->ops += 2;
         if (i % 50 == 0 && atree_validate(sh->tree, NULL, 0) != ATREE_OK) {
             w->failures++;
         }
+    }
+    if (atree_delete(sh->tree, NEXPR + 1) != ATREE_OK) {
+        w->failures++;
     }
     return NULL;
 }
