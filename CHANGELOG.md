@@ -16,6 +16,11 @@ All notable changes to this project are documented here. The format follows
   as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
 
 ### Fixed
+- Rolling back a failed insert re-filed a node that self-adjust had
+  re-keyed under its old identity hash with an insert that could need to
+  grow the table, and discarded the result; after an out-of-memory failure
+  the node could be left out of the identity table. A rewire now reserves
+  the slot its rollback needs, so the rollback insert never allocates.
 - A search that ran out of memory could leave a true/queued bit set for a
   node whose queue push had failed; the reset clears only queued ids, so
   the next search on that report missed or fabricated matches. Bits are
@@ -26,6 +31,11 @@ All notable changes to this project are documented here. The format follows
   replaces the Makefile's whole flag set, so that build ran without
   `-std=c99`, the warning set or `-Werror`. The Makefile now takes
   `EXTRA_CFLAGS`/`EXTRA_LDFLAGS`, which are appended.
+- The identity and content tables rehash in place when tombstones alone
+  trip the load factor instead of doubling; under insert/delete churn at a
+  steady size they no longer grow without bound (20 000 cycles over 200
+  live expressions grew them from 2048 to 16384 slots). `test_perf` gates
+  it: bytes allocated after a long churn equal those after a short one.
 ### Changed
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table

@@ -282,6 +282,42 @@ TEST(allocation_free_steady_state)
     return 0;
 }
 
+/* Bounded churn: deleting and re-inserting expressions at a steady live
+ * count must not grow the index. Every cycle retires one leaf and one AND
+ * node and creates two with fresh hashes, so the identity tables collect a
+ * tombstone per removal; a policy that grows a table whenever tombstones
+ * trip the load factor doubles it without bound. Node and predicate slots
+ * are recycled, so bytes_allocated after a long churn must equal what it
+ * was after a short one. */
+TEST(churn_is_bounded)
+{
+    atree_t *t = NULL;
+    atree_stats_t early;
+    atree_stats_t late;
+    char buf[64];
+    int i;
+    ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    for (i = 0; i < 200; i++) {
+        snprintf(buf, sizeof buf, "x = %d and q", i);
+        ASSERT_FALSE(ins(t, (atree_id_t)(i + 1), buf));
+    }
+    for (i = 0; i < 20000; i++) {
+        int k = i % 200;
+        if (i == 2000) {
+            atree_stats(t, &early);
+        }
+        ASSERT_OK(atree_delete(t, (atree_id_t)(k + 1)));
+        snprintf(buf, sizeof buf, "x = %d and q", 1000 + i);
+        ASSERT_FALSE(ins(t, (atree_id_t)(k + 1), buf));
+    }
+    atree_stats(t, &late);
+    ASSERT_EQ_U64(late.nodes, early.nodes);
+    ASSERT_EQ_U64(late.bytes_allocated, early.bytes_allocated);
+    ASSERT_OK(atree_validate(t, NULL, 0));
+    atree_destroy(t);
+    return 0;
+}
+
 /* Index independence: predicates on attributes the event does not touch,
  * and non-matching equalities on attributes it does touch, cost nothing in
  * phase 1. Adding ten thousand of them leaves predicates_evaluated unchanged. */
@@ -350,4 +386,5 @@ RUN_TEST(propagation_on_demand);
 RUN_TEST(sharing);
 RUN_TEST(reorganize_and_self_adjust_sharing);
 RUN_TEST(allocation_free_steady_state);
+RUN_TEST(churn_is_bounded);
 TEST_MAIN_END()

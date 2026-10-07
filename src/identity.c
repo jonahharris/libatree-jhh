@@ -20,6 +20,7 @@ void atree__idset_init(struct atree__idset *s)
     s->cap = 0;
     s->count = 0;
     s->used = 0;
+    s->reserved = 0;
 }
 
 static void set_free(struct atree *t, struct atree__idset *s)
@@ -96,18 +97,6 @@ static atree_status_t rehash(struct atree *t, struct atree__idset *s, key_fn key
     return ATREE_OK;
 }
 
-atree_status_t atree__idset_reserve(struct atree *t, uint32_t n)
-{
-    uint32_t cap = cap_for(n);
-    if (cap == 0) {
-        return ATREE_ERR_LIMIT;
-    }
-    if (cap <= t->identity.cap) {
-        return ATREE_OK;
-    }
-    return rehash(t, &t->identity, identity_key, cap);
-}
-
 static bool matches(const struct atree *t, atree__nid id, const struct atree__probe *p)
 {
     const struct atree__node *n = &t->nodes.data[id];
@@ -163,7 +152,7 @@ static atree_status_t set_insert(struct atree *t, struct atree__idset *s, key_fn
             j = (j + 1) & mask;
         }
         if (s->slots[j] == ATREE_IDSET_TOMB ||
-            (uint64_t)(s->used + 1) * 10 < (uint64_t)s->cap * 7) {
+            (uint64_t)(s->used + 1 + s->reserved) * 10 < (uint64_t)s->cap * 7) {
             if (s->slots[j] == ATREE_NID_NONE) {
                 s->used++;
             }
@@ -173,19 +162,16 @@ static atree_status_t set_insert(struct atree *t, struct atree__idset *s, key_fn
         }
     }
     {
-        uint32_t cap = cap_for(s->count + 1);
+        /* Over the load factor: rehash, in place when the live entries fit
+         * (that drops the tombstones; under insert/delete churn at a steady
+         * size the table then never grows), larger when they do not. */
+        uint32_t cap = cap_for(s->count + 1 + s->reserved);
         atree_status_t st;
         if (cap == 0) {
             return ATREE_ERR_LIMIT;
         }
         if (cap < s->cap) {
             cap = s->cap;
-        }
-        if (cap == s->cap) {
-            cap <<= 1; /* over the load factor on tombstones alone: grow anyway */
-            if (cap > IDSET_MAX_CAP) {
-                return ATREE_ERR_LIMIT;
-            }
         }
         st = rehash(t, s, key, cap);
         if (st != ATREE_OK) {
@@ -206,6 +192,26 @@ static atree_status_t set_insert(struct atree *t, struct atree__idset *s, key_fn
 atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id)
 {
     return set_insert(t, &t->identity, identity_key, hash, id);
+}
+
+void atree__idset_reinsert(struct atree *t, uint64_t hash, atree__nid id)
+{
+    struct atree__idset *s = &t->identity;
+    uint32_t mask = s->cap - 1;
+    uint32_t j = (uint32_t)hash & mask;
+    /* Every forward insert kept `reserved` slots free under the load
+     * factor, so an empty or tombstone slot is on this probe path. */
+    while (s->slots[j] != ATREE_NID_NONE && s->slots[j] != ATREE_IDSET_TOMB) {
+        j = (j + 1) & mask;
+    }
+    if (s->slots[j] == ATREE_NID_NONE) {
+        s->used++;
+    }
+    s->slots[j] = id;
+    s->count++;
+    if (s->reserved > 0) {
+        s->reserved--;
+    }
 }
 
 atree_status_t atree__cset_insert(struct atree *t, uint64_t hash, atree__nid id)

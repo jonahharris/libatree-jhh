@@ -1415,10 +1415,14 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
         return st;
     }
     child_pos_of_vec(&nc)[idx_n] = node_at(t, nid)->parents.len - 1;
-    /* new identity entry before removing the old one (may allocate) */
+    /* new identity entry before removing the old one (may allocate); one
+     * slot is reserved for rollback to re-file P under old_hash without
+     * allocating, in case the table rehashes later in this insert */
     if (new_hash != old_hash) {
+        t->identity.reserved++;
         st = atree__idset_insert(t, new_hash, pid);
         if (st != ATREE_OK) {
+            t->identity.reserved--;
             node_at(t, nid)->parents.len--; /* P was pushed last */
             j->len--;
             children_free(t, &nc);
@@ -1737,7 +1741,7 @@ static void rollback(atree_t *t, struct journalvec *j)
             }
             if (p->hash != e->old_hash) {
                 atree__idset_remove(t, p->hash, e->node);
-                (void)atree__idset_insert(t, e->old_hash, e->node); /* reuses the tombstone */
+                atree__idset_reinsert(t, e->old_hash, e->node); /* reserved by the rewire */
             }
             children_free(t, &p->children);
             p->children = e->old_children;
@@ -1774,6 +1778,7 @@ static void journal_commit(atree_t *t, struct journalvec *j)
         }
     }
     j->len = 0; /* the vector itself is reused by the next insert */
+    t->identity.reserved = 0;
 }
 
 static uint32_t expr_node_count(const atree_expr_t *e)
@@ -2194,6 +2199,9 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
         if (atree__idset_find(t, &probe) != i) {
             FAIL("identity table does not resolve to the node", i, 0);
         }
+    }
+    if (t->identity.reserved != 0) {
+        FAIL("identity table reservation outlived its insert", t->identity.reserved, 0);
     }
     if (live != t->identity.count) {
         FAIL("identity table count mismatch", live, t->identity.count);

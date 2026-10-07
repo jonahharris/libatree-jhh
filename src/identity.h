@@ -20,7 +20,8 @@ struct atree__idset {
     uint32_t *slots; /* node id, ATREE_NID_NONE (empty) or ATREE_IDSET_TOMB */
     uint32_t cap;    /* power of two or 0 */
     uint32_t count;
-    uint32_t used; /* count + tombstones */
+    uint32_t used;     /* count + tombstones */
+    uint32_t reserved; /* slots a rollback may still need (see atree__idset_reinsert) */
 };
 
 #define ATREE_IDSET_TOMB (UINT32_MAX - 1)
@@ -48,11 +49,15 @@ void atree__idset_free(struct atree *t);
 
 /* Finds the node matching the probe, or ATREE_NID_NONE. */
 atree__nid atree__idset_find(const struct atree *t, const struct atree__probe *probe);
-/* Inserts a node under its hash (the caller guarantees it is not present). */
+/* Inserts a node under its hash (the caller guarantees it is not present).
+ * Keeps `reserved` slots free under the load factor on top of this one. */
 atree_status_t atree__idset_insert(struct atree *t, uint64_t hash, atree__nid id);
+/* Rollback's insert: re-files a node under a hash it was removed from in
+ * the same insert, consuming one of the slots a rewire reserved for it
+ * (t->identity.reserved++ before the rewire's own insert), so it never
+ * allocates and cannot fail. */
+void atree__idset_reinsert(struct atree *t, uint64_t hash, atree__nid id);
 /* Removes a node; returns false if it was not present. */
 bool atree__idset_remove(struct atree *t, uint64_t hash, atree__nid id);
-/* Pre-sizes for n entries. */
-atree_status_t atree__idset_reserve(struct atree *t, uint32_t n);
 
 #endif /* ATREE_IDENTITY_H */
