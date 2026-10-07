@@ -262,11 +262,14 @@ static atree_status_t wake_range(atree_report_t *r, const atree_t *t, const stru
         if (bit_get(r->queued, pid)) {
             continue;
         }
-        bit_set(r->queued, pid);
+        /* Queue first, mark second: reset_scratch clears the bits of the
+         * ids in the queues, so a bit set for an id whose push failed
+         * would outlive this search and corrupt the next one. */
         st = atree__u32vec_push(&r->mem, &r->queues[t->nodes.data[pid].level], pid);
         if (st != ATREE_OK) {
             return st;
         }
+        bit_set(r->queued, pid);
     }
     return ATREE_OK;
 }
@@ -301,13 +304,18 @@ static atree_status_t emit(atree_report_t *r, const atree_t *t, atree__nid id,
 static atree_status_t seed_leaf(void *ctx, atree__nid id)
 {
     atree_report_t *r = (atree_report_t *)ctx;
+    atree_status_t st;
     if (bit_get(r->queued, id)) {
         return ATREE_OK;
+    }
+    st = atree__u32vec_push(&r->mem, &r->queues[1], id); /* queue first, see wake_range */
+    if (st != ATREE_OK) {
+        return st;
     }
     r->stats.predicates_matched++;
     bit_set(r->is_true, id);
     bit_set(r->queued, id);
-    return atree__u32vec_push(&r->mem, &r->queues[1], id);
+    return ATREE_OK;
 }
 
 /* Phase 1 with indexes: look up exactly the satisfied leaves per attribute. */
@@ -327,14 +335,13 @@ static atree_status_t phase1_scan(atree_report_t *r, const atree_t *t, const atr
         atree_tri_t v = atree__pred_eval(p, atree__event_value(ev, p->attr));
         r->stats.predicates_evaluated++;
         if (v == ATREE_TRUE) {
-            atree_status_t st;
-            r->stats.predicates_matched++;
-            bit_set(r->is_true, id);
-            bit_set(r->queued, id);
-            st = atree__u32vec_push(&r->mem, &r->queues[1], id);
+            atree_status_t st = atree__u32vec_push(&r->mem, &r->queues[1], id); /* queue first */
             if (st != ATREE_OK) {
                 return st;
             }
+            r->stats.predicates_matched++;
+            bit_set(r->is_true, id);
+            bit_set(r->queued, id);
         }
     }
     return ATREE_OK;

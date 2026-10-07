@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The format follows
   The budget is checked as nodes are allocated, so it bounds time as well
   as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
 
+### Fixed
+- A search that ran out of memory could leave a true/queued bit set for a
+  node whose queue push had failed; the reset clears only queued ids, so
+  the next search on that report missed or fabricated matches. Bits are
+  now set after the push succeeds. `test_alloc_failure` requires a retry
+  after a failed search to return exactly the undisturbed count.
+
 ### Changed
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table

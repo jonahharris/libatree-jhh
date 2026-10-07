@@ -222,6 +222,7 @@ TEST(delete_and_search_failures)
     size_t k;
     size_t base;
     int problems = 0;
+    size_t expected;
 
     test_alloc_init(&ta);
     ASSERT_FALSE(run_script(&ta, &t, &total));
@@ -247,7 +248,15 @@ TEST(delete_and_search_failures)
     }
 
     /* Report creation and search: fail each allocation point; the tree
-     * must be unaffected and a report must stay usable afterwards. */
+     * must be unaffected and a report must stay usable afterwards, giving
+     * exactly the matches an undisturbed search gives (a bit left set by
+     * the failed search would hide or fabricate a match). */
+    ASSERT_OK(atree_report_create(t, &rep));
+    ASSERT_OK(atree_search(t, ev, rep));
+    expected = atree_report_count(rep);
+    ASSERT_TRUE(expected >= 3);
+    atree_report_destroy(rep);
+    rep = NULL;
     for (k = 1; k <= 12; k++) {
         atree_status_t st;
         base = ta.attempts;
@@ -259,9 +268,9 @@ TEST(delete_and_search_failures)
                 if (st != ATREE_ERR_NOMEM || atree_report_count(rep) != 0) {
                     problems++;
                 }
-                /* the next search on the same report works */
+                /* the next search on the same report works, exactly */
                 ta.fail_at = 0;
-                if (atree_search(t, ev, rep) != ATREE_OK || atree_report_count(rep) < 3) {
+                if (atree_search(t, ev, rep) != ATREE_OK || atree_report_count(rep) != expected) {
                     problems++;
                 }
             }
