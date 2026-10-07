@@ -224,10 +224,9 @@ since a superset parent is in every child's parent list), and reorganize
 scans anchor lists (above). Promoting or demoting an anchor is two swaps in
 the child's parent list plus the position fix-ups, allocation free, so
 rewire and rollback can re-choose anchors without new failure paths. On
-100k expressions insert throughput went from 34k/s to 48k/s (ordering) to
-104k/s (anchors), within 5% of running with reorganize and self-adjust
-disabled, and the index has slightly fewer edges because the scan no longer
-hits its cap.
+100k expressions insert throughput went from 116k/s to 239k/s (release
+build), and at 1M from 40.5k/s to 181k/s, and the index has slightly fewer
+edges because the scan no longer hits its cap.
 
 The parent list is split a second way for matching. A parent *wakes* this
 node when it is an OR node, an AND node whose access child is this node, or

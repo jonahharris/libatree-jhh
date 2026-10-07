@@ -20,6 +20,11 @@ All notable changes to this project are documented here. The format follows
   predicate slab) to fit the boundaries in 64 bytes.
 - Leaf identity hashes string literals by content, so the same predicate
   text always hashes alike whether or not its strings are interned.
+  Release-build effect of this group: 100k inserts 239k/s → 318k/s, 1M
+  inserts 181k/s → 227k/s, search p50 −15% at 100k and −11% at 1M, 2× on
+  the `--ads` sharing profile; memory +10% at 1M.
+- `make MODE=release` builds into `build-release/` so a debug `make check`
+  can no longer leave -O0 objects for a release benchmark to link.
 - Inner nodes record, per child, their position in the child's parent
   list: unlinking (delete, rollback) is O(log fan-out) instead of linear in
   the child's parent count; `atree_validate` checks positions directly and
@@ -32,8 +37,9 @@ All notable changes to this project are documented here. The format follows
   parents it anchors at the front of its parent list, and the scan reads
   only those prefixes. The search is exact (a cover contains its anchor)
   and never walks a popular leaf's parent list. Insert throughput on the
-  100k synthetic workload: 34k/s → 104k/s; at 1M expressions 14k/s →
-  81k/s with the default `max_adjust_candidates`, and slightly fewer edges.
+  100k synthetic workload (release build): 116k/s → 239k/s; at 1M
+  expressions 40.5k/s → 181k/s with the default `max_adjust_candidates`,
+  and slightly fewer edges.
   Node levels are now 16-bit (`ATREE_ERR_LIMIT` above 65535, previously
   unreachable in practice); `atree_validate` checks the anchor partition.
 - `bench_synthetic` reports predicates per expression, the predicate

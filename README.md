@@ -198,35 +198,37 @@ correspondingly faster.
 
 | Configuration | search p50 | search p99 | nodes visited / event | predicates evaluated / event |
 |---|---|---|---|---|
-| all optimizations on | 0.84 ms | 1.51 ms | 4 497 | 3 322 |
-| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 1.10 ms | 1.90 ms | 9 226 | 3 322 |
-| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 2.66 ms | 3.51 ms | 4 497 | 233 770 |
-| everything off (flags 15) | 2.95 ms | 4.08 ms | 9 632 | 233 770 |
-| all on, 5 pairs per event | 0.17 ms | 0.62 ms | 1 184 | 853 |
+| all optimizations on | 0.40 ms | 0.71 ms | 4 497 | 3 322 |
+| no propagation on demand (`ATREE_FLAG_NO_PROPAGATION_ON_DEMAND`) | 0.53 ms | 0.96 ms | 9 226 | 3 322 |
+| no predicate index (`ATREE_FLAG_NO_PREDICATE_INDEX`) | 1.24 ms | 1.73 ms | 4 497 | 233 770 |
+| everything off (flags 15) | 1.38 ms | 2.02 ms | 9 632 | 233 770 |
+| all on, 5 pairs per event | 0.08 ms | 0.32 ms | 1 184 | 853 |
+
+All timings here and in `docs/COMPARISON.md` are from `make MODE=release`
+builds (-O2) with nothing else running; the paper's numbers are gcc -O3.
 
 Index size for the 100 000 expressions: 409 790 nodes, 582 566 edges, about
 930 bytes per expression (reorganize and self-adjust removed about 48 000
-edges). Inserts run at 127 000 expressions/s with all optimizations on and
-138 000/s with reorganize and self-adjust disabled; an insert looks each
+edges). Inserts run at 318 000 expressions/s with all optimizations on and
+365 000/s with reorganize and self-adjust disabled; an insert looks each
 subexpression up before building it, so a repeated subexpression costs one
 probe, and the candidate search for new nodes uses anchor lists. Deletes
 exceed 350 000/s.
 
 **Against the Rust `a-tree` crate**, on identical datasets in the dialect
-both accept, libatree returns exactly the same matches and searches 26×
-faster at 20 000 expressions and 42× faster at 100 000 (0.80 ms vs 33 ms
+both accept, libatree returns exactly the same matches and searches 60×
+faster at 20 000 expressions and 97× faster at 100 000 (0.34 ms vs 33 ms
 p50) in a fifth of the memory, because the crate evaluates every predicate
 per event while libatree probes per-attribute indexes. **Against the
-paper's Table 4** (1.39M real expressions: 1.6 ms, 2.9 s construction,
-205 MB) libatree at 1M synthetic expressions matches a far denser workload
-in 12.8 ms p50, constructs in 10.4 s (96 000 expressions/s, parsing timed
-separately) and uses about 724 bytes per expression. On a profile with the
-paper's predicate sharing (`bench_synthetic --ads`: 1.39M expressions, 54
-predicates each, every predicate shared 83 times) construction takes 76 s;
-the remaining gap to the paper's 2.9 s is the greedy reorganize and
-self-adjust work on the nodes that are new, plus a workload that shares
-far less at the inner levels. Details, caveats and reproduction commands
-are in `docs/COMPARISON.md`.
+paper's Table 4** (an Ads-derived workload of 1.39M expressions: 1.6 ms,
+2.9 s construction, 205 MB) libatree at 1M synthetic expressions matches a
+far denser workload in 5.7 ms p50, constructs in 4.4 s (227 000
+expressions/s, parsing timed separately) and uses about 724 bytes per
+expression, 4.4× the paper's memory. On a profile with the paper's predicate
+sharing (`bench_synthetic --ads`: 1.39M expressions, 54 predicates each,
+every predicate shared 83 times) construction takes 30 s. Memory is the
+widest gap; `docs/COMPARISON.md` has the per-component breakdown, the
+caveats and the reproduction commands.
 
 Work counters, not timings, are the regression gates (`tests/test_perf.c`
 and `make bench-check` against `bench/baseline.json`): zero suppression

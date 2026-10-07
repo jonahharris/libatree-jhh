@@ -11,7 +11,9 @@ CXX     ?= c++
 AR      ?= ar
 MODE    ?= debug
 WERROR  ?= 1
-BUILD   ?= build
+# Release objects live in their own directory so a debug `make check` can never
+# leave -O0 objects for a release bench to link.
+BUILD   ?= $(if $(filter release,$(MODE)),build-release,build)
 PREFIX  ?= /usr/local
 DESTDIR ?=
 CLANG_FORMAT ?= clang-format
