@@ -85,11 +85,26 @@ static int set_item(const atree_t *t, atree_event_t *ev, char *item)
     ty = atree_attr_type(t, id);
     switch (ty) {
     case ATREE_TYPE_BOOL:
+        if (strcmp(val, "true") != 0 && strcmp(val, "false") != 0) {
+            return 1;
+        }
         return atree_event_set_bool_id(ev, id, strcmp(val, "true") == 0) != ATREE_OK;
-    case ATREE_TYPE_INT:
-        return atree_event_set_int_id(ev, id, strtoll(val, NULL, 10)) != ATREE_OK;
-    case ATREE_TYPE_FLOAT:
-        return atree_event_set_float_id(ev, id, strtod(val, NULL)) != ATREE_OK;
+    case ATREE_TYPE_INT: {
+        char *end = NULL;
+        long long v = strtoll(val, &end, 10);
+        if (end == val || *end != '\0') {
+            return 1;
+        }
+        return atree_event_set_int_id(ev, id, v) != ATREE_OK;
+    }
+    case ATREE_TYPE_FLOAT: {
+        char *end = NULL;
+        double v = strtod(val, &end);
+        if (end == val || *end != '\0') {
+            return 1;
+        }
+        return atree_event_set_float_id(ev, id, v) != ATREE_OK;
+    }
     case ATREE_TYPE_STRING: {
         size_t n = strlen(val);
         if (n >= 2 && val[0] == '"' && val[n - 1] == '"') {

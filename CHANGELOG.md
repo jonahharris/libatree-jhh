@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `server/atreed`: a continuous-query server over the library that serves
+  Redis, Postgres and HTTP clients on one port, built on pogocache's
+  networking core (vendored under `server/deps/pogocache`, MIT, with the
+  changes listed in its MODIFICATIONS.md). Queries are registered with
+  `ATREE.SUBSCRIBE id expr`, events ingested with `ATREE.EVENT` in the
+  line format or as JSON, and matches delivered as Redis pub/sub messages
+  (`SUBSCRIBE atree:<id>`), streamed Postgres rows (`WATCH <id>`),
+  Postgres notifications (`LISTEN atree_<id>`) or Server-Sent Events
+  (`GET /subscribe/<id>`). One event-loop thread; `make -C server check`
+  runs raw-protocol tests. The shared line-format parser now rejects
+  malformed numbers and booleans instead of reading them as zero/false.
 - `tools/atree_shell`: an interactive shell, server and client for playing
   with the library. Commands define attributes, register continuous
   queries (`SUBSCRIBE id expr`), ingest events (`EVENT a=v;b=v`, answered

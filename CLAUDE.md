@@ -9,6 +9,13 @@ stay in sync with the code.
 `tools/` holds POSIX programs built on the library (sockets allowed there,
 never in `src/`); `make check` smoke-tests them through `tests/shell_smoke.sh`.
 
+`server/` is `atreed`, a separate program over the public API with its own
+Makefile (`make -C server`, `make -C server check`). Its own files keep the
+library's warning set; `server/deps/pogocache/` is vendored MIT code
+compiled as it ships (gnu11), changed only as recorded in its
+MODIFICATIONS.md, with every change marked `atreed` in the code. The
+library stays free of everything in `server/`.
+
 `reference/` is **read-only input** (paper, Rust crate, be-tree, bplus-tree,
 an embedded C A-Tree). Never modify it, never copy code from it verbatim
 (different licenses and quality bars); re-derive and cite the idea in a
@@ -25,6 +32,7 @@ make check-tsan      # tests/test_threads under -fsanitize=thread (clang)
 make check-valgrind  # tests under valgrind --error-exitcode=1 --leak-check=full
 make bench           # build benchmarks (bench/ output explains how to run)
 make tools           # tools/atree_shell: stdin REPL, --listen PORT|PATH server, --connect client
+make -C server check # build server/atreed (Redis/Postgres/HTTP continuous queries) and run its tests
 make fuzz            # build libFuzzer harness (clang only)
 make format          # clang-format in place;  make format-check in CI
 cmake -B build && cmake --build build && ctest --test-dir build   # CMake path (also MSVC)

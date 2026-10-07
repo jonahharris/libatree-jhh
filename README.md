@@ -121,6 +121,17 @@ serving many clients from one tree: a client that subscribed an id receives
 queries end with its connection. `atree_shell --connect localhost 7777`
 is the client. The shell is POSIX only; the library itself is not.
 
+## A server
+
+`make -C server` builds `atreed`, a continuous-query server that serves
+Redis, Postgres and HTTP clients on one port over a single tree, on
+pogocache's networking core. Register queries with `ATREE.SUBSCRIBE`, feed
+events with `ATREE.EVENT` (line format or JSON), and receive matches as
+Redis pub/sub messages (`SUBSCRIBE atree:7`), streamed Postgres rows
+(`WATCH 7`), notifications (`LISTEN atree_7`) or Server-Sent Events
+(`GET /subscribe/7`). `server/README.md` has the commands and examples;
+`make -C server check` runs its protocol tests.
+
 ## Expression language
 
 Compatible with the Rust `a-tree` crate's DSL, with `xor`, `xnor`,
@@ -285,7 +296,9 @@ allocator calls.
 - `tests/` — unit, differential, allocation-failure, thread and work-count
   tests; `fuzz/` — libFuzzer harness and corpus; `bench/` — benchmarks.
 - `extras/` — header-only lock adapters; `tools/` — `atree_shell`, the
-  interactive shell, server and client (POSIX).
+  interactive shell and line-protocol server (POSIX); `server/` — `atreed`,
+  the Redis/Postgres/HTTP continuous-query server, with its vendored
+  networking core under `server/deps/`.
 - `PLAN.md` — the design and plan the library was built from; `CLAUDE.md` —
   the coding rules it is held to.
 
