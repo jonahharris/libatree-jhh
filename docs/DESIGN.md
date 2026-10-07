@@ -273,10 +273,15 @@ and created nodes are released by cascade over a pre-reserved worklist.
 `test_alloc_failure` exercises every allocation point including the
 self-adjust paths.
 
-**Phase 1 with indexes (M5).** For each attribute: undefined → seed the
-`is null` list only; bool → one of two lists; scalar → equality bucket,
-membership bucket and both ray arrays; list → the membership bucket of each
-element; then the attribute's scan list is evaluated. `predicates_evaluated`
+**Phase 1 with indexes (M5).** The probe walks two short lists, not the
+schema: the attributes that have `is null` leaves (`index.null_attrs`,
+seeded when the event leaves them undefined) and the attributes the event
+defines (the event keeps their ids in `defined`, maintained by its setters,
+so `atree_event_clear` resets only those). For a defined attribute: bool →
+one of two lists; scalar → equality bucket, membership bucket and both ray
+arrays; list → the membership bucket of each element; then the attribute's
+scan list is evaluated. With a thousand attributes and twenty per event the
+schema walk had been about a sixth of a sparse search. `predicates_evaluated`
 counts index hits plus scan evaluations, so it is independent of how many
 predicates exist on attributes the event does not touch or with values the
 event does not have (`test_perf` adds ten thousand such predicates and

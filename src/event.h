@@ -33,6 +33,11 @@ struct atree_event {
     uint32_t nattrs;
     struct atree__value *values; /* nattrs */
     struct atree__listbuf *bufs; /* nattrs; unused slots stay zero */
+    /* The ids whose value is defined, in no order (an id is listed iff its
+     * kind is not ATREE_V_UNDEFINED): phase 1 visits these instead of
+     * every attribute of the schema, and clear resets only these. */
+    uint32_t *defined; /* nattrs */
+    uint32_t ndefined;
 };
 
 /* id must be valid. */

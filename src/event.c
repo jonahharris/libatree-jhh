@@ -31,7 +31,8 @@ atree_status_t atree_event_create(const atree_t *tree, atree_event_t **out)
     if (n > 0) {
         ev->values = atree__zalloc_array(&ev->mem, n, sizeof *ev->values);
         ev->bufs = atree__zalloc_array(&ev->mem, n, sizeof *ev->bufs);
-        if (ev->values == NULL || ev->bufs == NULL) {
+        ev->defined = atree__zalloc_array(&ev->mem, n, sizeof *ev->defined);
+        if (ev->values == NULL || ev->bufs == NULL || ev->defined == NULL) {
             atree_event_destroy(ev);
             return ATREE_ERR_NOMEM;
         }
@@ -64,6 +65,9 @@ void atree_event_destroy(atree_event_t *ev)
     if (ev->values != NULL) {
         atree__free_array(&ev->mem, ev->values, ev->nattrs, sizeof *ev->values);
     }
+    if (ev->defined != NULL) {
+        atree__free_array(&ev->mem, ev->defined, ev->nattrs, sizeof *ev->defined);
+    }
     mem = ev->mem;
     atree__free(&mem, ev, sizeof *ev);
 }
@@ -74,9 +78,34 @@ void atree_event_clear(atree_event_t *ev)
     if (ev == NULL) {
         return;
     }
-    for (i = 0; i < ev->nattrs; i++) {
-        ev->values[i].kind = ATREE_V_UNDEFINED;
+    for (i = 0; i < ev->ndefined; i++) {
+        ev->values[ev->defined[i]].kind = ATREE_V_UNDEFINED;
     }
+    ev->ndefined = 0;
+}
+
+/* Keeps ev->defined in step with the values: called before a slot becomes
+ * defined, and in place of making one undefined. */
+static void define(atree_event_t *ev, atree_attr_id_t id)
+{
+    if (ev->values[id].kind == ATREE_V_UNDEFINED) {
+        ev->defined[ev->ndefined++] = id;
+    }
+}
+
+static void undefine(atree_event_t *ev, atree_attr_id_t id)
+{
+    uint32_t i;
+    if (ev->values[id].kind == ATREE_V_UNDEFINED) {
+        return;
+    }
+    for (i = 0; i < ev->ndefined; i++) {
+        if (ev->defined[i] == id) {
+            ev->defined[i] = ev->defined[--ev->ndefined];
+            break;
+        }
+    }
+    ev->values[id].kind = ATREE_V_UNDEFINED;
 }
 
 /* Validates id and type; returns the attribute id's value slot. */
@@ -152,6 +181,7 @@ atree_status_t atree_event_set_bool_id(atree_event_t *ev, atree_attr_id_t id, bo
     if (st != ATREE_OK) {
         return st;
     }
+    define(ev, id);
     v->kind = ATREE_V_BOOL;
     v->u.b = value;
     return ATREE_OK;
@@ -164,6 +194,7 @@ atree_status_t atree_event_set_int_id(atree_event_t *ev, atree_attr_id_t id, int
     if (st != ATREE_OK) {
         return st;
     }
+    define(ev, id);
     v->kind = ATREE_V_INT;
     v->u.i = value;
     return ATREE_OK;
@@ -177,9 +208,10 @@ atree_status_t atree_event_set_float_id(atree_event_t *ev, atree_attr_id_t id, d
         return st;
     }
     if (atree__double_is_nan(value)) {
-        v->kind = ATREE_V_UNDEFINED; /* NaN carries no information: undefined */
+        undefine(ev, id); /* NaN carries no information: undefined */
         return ATREE_OK;
     }
+    define(ev, id);
     v->kind = ATREE_V_FLOAT;
     v->u.f = value;
     return ATREE_OK;
@@ -202,6 +234,7 @@ atree_status_t atree_event_set_string_id(atree_event_t *ev, atree_attr_id_t id, 
     atree__rdlock(ev->tree);
     v->u.s = atree__strtab_lookup(&ev->tree->strings, s, len);
     atree__rdunlock(ev->tree);
+    define(ev, id);
     v->kind = ATREE_V_STRING;
     return ATREE_OK;
 }
@@ -224,6 +257,7 @@ atree_status_t atree_event_set_int_list_id(atree_event_t *ev, atree_attr_id_t id
     if (n > 0) {
         memcpy(ev->bufs[id].data.i, values, n * sizeof *values);
     }
+    define(ev, id);
     v->kind = ATREE_V_INT_LIST;
     v->u.il.data = ev->bufs[id].data.i;
     v->u.il.len = atree__sort_unique_i64(ev->bufs[id].data.i, (uint32_t)n);
@@ -258,6 +292,7 @@ atree_status_t atree_event_set_string_list_id(atree_event_t *ev, atree_attr_id_t
         ev->bufs[id].data.s[i] = atree__strtab_lookup(&ev->tree->strings, strings[i], len);
     }
     atree__rdunlock(ev->tree);
+    define(ev, id);
     v->kind = ATREE_V_STRING_LIST;
     v->u.sl.data = ev->bufs[id].data.s;
     v->u.sl.len = atree__sort_unique_u32(ev->bufs[id].data.s, (uint32_t)n);
@@ -272,7 +307,7 @@ atree_status_t atree_event_set_undefined_id(atree_event_t *ev, atree_attr_id_t i
     if (id >= ev->nattrs) {
         return ATREE_ERR_INVALID_ARG;
     }
-    ev->values[id].kind = ATREE_V_UNDEFINED;
+    undefine(ev, id);
     return ATREE_OK;
 }
 

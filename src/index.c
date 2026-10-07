@@ -60,6 +60,7 @@ atree_status_t atree__index_init(struct atree *t)
     atree__bucketvec_init(&ix->buckets);
     atree__u32vec_init(&ix->free_buckets);
     atree__u32vec_init(&ix->list_pos);
+    atree__u32vec_init(&ix->null_attrs);
     if (n == 0) {
         return ATREE_OK;
     }
@@ -106,6 +107,7 @@ void atree__index_free(struct atree *t)
     atree__bucketvec_free(&t->mem, &ix->buckets);
     atree__u32vec_free(&t->mem, &ix->free_buckets);
     atree__u32vec_free(&t->mem, &ix->list_pos);
+    atree__u32vec_free(&t->mem, &ix->null_attrs);
     memset(ix, 0, sizeof *ix);
 }
 
@@ -402,6 +404,12 @@ atree_status_t atree__index_add(struct atree *t, atree__nid id)
         break;
     case ATREE_ROUTE_NULL:
         st = list_add(t, &ia->nulls, id);
+        if (st == ATREE_OK && ia->nulls.len == 1) {
+            st = atree__u32vec_push(&t->mem, &t->index.null_attrs, p->attr);
+            if (st != ATREE_OK) {
+                list_remove(t, &ia->nulls, id);
+            }
+        }
         break;
     case ATREE_ROUTE_SCAN:
         st = list_add(t, &ia->scan, id);
@@ -467,6 +475,12 @@ void atree__index_remove(struct atree *t, atree__nid id)
         break;
     case ATREE_ROUTE_NULL:
         list_remove(t, &ia->nulls, id);
+        if (ia->nulls.len == 0) {
+            uint32_t pos = atree__u32vec_find(&t->index.null_attrs, p->attr);
+            if (pos != UINT32_MAX) {
+                atree__u32vec_swap_remove(&t->index.null_attrs, pos);
+            }
+        }
         break;
     case ATREE_ROUTE_SCAN:
         list_remove(t, &ia->scan, id);
@@ -653,6 +667,12 @@ atree_status_t atree__index_check(const struct atree *t, struct atree__mem *scra
         check_buckets(&c, &ia->member, ATREE_ROUTE_MEMBER, a);
         check_rays(&c, &ia->lower, ATREE_ROUTE_LOWER, a, ty);
         check_rays(&c, &ia->upper, ATREE_ROUTE_UPPER, a, ty);
+        if ((atree__u32vec_find(&t->index.null_attrs, a) != UINT32_MAX) != (ia->nulls.len > 0)) {
+            check_fail(&c, "null-attribute list disagrees with the nulls lists", a, ia->nulls.len);
+        }
+    }
+    if (t->index.null_attrs.len > t->index.nattrs) {
+        check_fail(&c, "null-attribute list has duplicates", t->index.null_attrs.len, 0);
     }
     for (i = 0; i < t->nodes.len && !c.bad; i++) {
         const struct atree__node *n = &t->nodes.data[i];
@@ -786,17 +806,22 @@ static atree_status_t seed_scan(const struct atree *t, const struct atree__u32ve
 atree_status_t atree__index_probe(const struct atree *t, const struct atree_event *ev,
                                   atree__seed_fn seed, void *ctx, uint64_t *evaluated)
 {
-    uint32_t a;
+    uint32_t k;
     atree_status_t st = ATREE_OK;
-    for (a = 0; st == ATREE_OK && a < t->index.nattrs; a++) {
+    /* Two short lists instead of the whole schema: the attributes that have
+     * `is null` leaves (true when the event leaves them undefined, paper
+     * §3.2) and the attributes the event defines. */
+    for (k = 0; st == ATREE_OK && k < t->index.null_attrs.len; k++) {
+        uint32_t a = t->index.null_attrs.data[k];
+        if (atree__event_value(ev, a)->kind == ATREE_V_UNDEFINED) {
+            st = seed_list(&t->index.attrs[a].nulls, seed, ctx, evaluated);
+        }
+    }
+    for (k = 0; st == ATREE_OK && k < ev->ndefined; k++) {
+        uint32_t a = ev->defined[k];
         const struct atree__index_attr *ia = &t->index.attrs[a];
         const struct atree__value *v = atree__event_value(ev, a);
         atree_type_t ty = type_of(t, a);
-        if (v->kind == ATREE_V_UNDEFINED) {
-            /* Only `is null` is true on an undefined attribute (paper §3.2). */
-            st = seed_list(&ia->nulls, seed, ctx, evaluated);
-            continue;
-        }
         switch (ty) {
         case ATREE_TYPE_BOOL:
             st = seed_list(v->u.b ? &ia->bool_true : &ia->bool_false, seed, ctx, evaluated);

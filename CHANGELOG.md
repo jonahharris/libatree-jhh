@@ -59,6 +59,12 @@ All notable changes to this project are documented here. The format follows
 - The benchmark clock on macOS is the scaled mach clock (41 ns
   resolution) instead of `CLOCK_MONOTONIC`, which has microsecond
   resolution there; per-insert and small-search timings were quantized.
+- Phase 1 no longer iterates every attribute of the schema per search:
+  the event keeps the ids it defines and the index keeps the attributes
+  that have `is null` leaves, and the probe walks those two lists.
+  `atree_event_clear` resets only the defined ids. Release build, 100k
+  expressions over 1000 attributes: a 5-pair event 31.5 → 29.8 µs p50, a
+  20-pair event 126 → 123 µs.
 ### Changed
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table
