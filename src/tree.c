@@ -347,16 +347,79 @@ static uint32_t child_index(const struct atree__node *n, atree__nid c)
     return child_index_in_vec(&n->children, c);
 }
 
+/* Per-edge position entries: the position in the child's parent list, with
+ * the anchor flag in the high bit. */
+#define EDGE_ANCHOR UINT32_C(0x80000000)
+#define EDGE_POS_MAX (EDGE_ANCHOR - 1)
+
+static uint32_t edge_pos(uint32_t e)
+{
+    return e & ~EDGE_ANCHOR;
+}
+
+static bool edge_anchored(uint32_t e)
+{
+    return (e & EDGE_ANCHOR) != 0;
+}
+
+/* Re-records, for the parent stored at cn->parents[idx], where it sits in
+ * child c's list; the anchor flag follows the region. */
+static void fix_pos(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t idx)
+{
+    struct atree__node *pn = node_at(t, cn->parents.data[idx]);
+    uint32_t j = child_index(pn, c);
+    if (j != UINT32_MAX) {
+        child_pos(pn)[j] = idx | (idx < cn->nanchor ? EDGE_ANCHOR : 0);
+    }
+}
+
+static void parents_swap(struct atree__node *cn, uint32_t a, uint32_t b)
+{
+    atree__nid tmp = cn->parents.data[a];
+    cn->parents.data[a] = cn->parents.data[b];
+    cn->parents.data[b] = tmp;
+}
+
+/* Moves the parent at index k (outside the anchored prefix) into it. */
+static void promote(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t k)
+{
+    uint32_t b = cn->nanchor;
+    parents_swap(cn, k, b);
+    cn->nanchor++;
+    fix_pos(t, cn, c, k);
+    fix_pos(t, cn, c, b);
+}
+
+/* Moves the parent at index k (inside the anchored prefix) out of it; it
+ * ends up at index nanchor. */
+static void demote(atree_t *t, struct atree__node *cn, atree__nid c, uint32_t k)
+{
+    uint32_t b;
+    cn->nanchor--;
+    b = cn->nanchor;
+    parents_swap(cn, k, b);
+    fix_pos(t, cn, c, k);
+    fix_pos(t, cn, c, b);
+}
+
 /* Makes `id` a parent of its i-th child (may allocate in the child's list). */
-static atree_status_t link_child(atree_t *t, atree__nid id, uint32_t i)
+static atree_status_t link_child(atree_t *t, atree__nid id, uint32_t i, bool anchor)
 {
     struct atree__node *n = node_at(t, id);
-    struct atree__node *cn = node_at(t, n->children.data[i]);
-    atree_status_t st = atree__u32vec_push(&t->mem, &cn->parents, id);
+    atree__nid c = n->children.data[i];
+    struct atree__node *cn = node_at(t, c);
+    atree_status_t st;
+    if (cn->parents.len >= EDGE_POS_MAX) {
+        return ATREE_ERR_LIMIT;
+    }
+    st = atree__u32vec_push(&t->mem, &cn->parents, id);
     if (st != ATREE_OK) {
         return st;
     }
     child_pos(n)[i] = cn->parents.len - 1;
+    if (anchor) {
+        promote(t, cn, c, cn->parents.len - 1);
+    }
     cn->use_count++;
     t->edges++;
     return ATREE_OK;
@@ -369,24 +432,60 @@ static void unlink_child(atree_t *t, atree__nid id, uint32_t i)
     struct atree__node *n = node_at(t, id);
     atree__nid c = n->children.data[i];
     struct atree__node *cn = node_at(t, c);
-    uint32_t k = child_pos(n)[i];
-    uint32_t last = cn->parents.len - 1;
+    uint32_t e = child_pos(n)[i];
+    uint32_t k = edge_pos(e);
+    uint32_t last;
+    if (edge_anchored(e)) {
+        demote(t, cn, c, k); /* now at index nanchor, outside the prefix */
+        k = cn->nanchor;
+    }
+    last = cn->parents.len - 1;
     if (k != last) {
-        atree__nid moved = cn->parents.data[last];
-        struct atree__node *mn = node_at(t, moved);
-        uint32_t j = child_index(mn, c);
-        cn->parents.data[k] = moved;
-        if (j != UINT32_MAX) {
-            child_pos(mn)[j] = k;
-        }
+        parents_swap(cn, k, last);
+        fix_pos(t, cn, c, k);
     }
     cn->parents.len--;
     cn->use_count--;
     t->edges--;
 }
 
+/* Sets whether `id`'s i-th edge is the anchor edge. Never allocates. */
+static void set_anchor(atree_t *t, atree__nid id, uint32_t i, bool anchor)
+{
+    struct atree__node *n = node_at(t, id);
+    atree__nid c = n->children.data[i];
+    struct atree__node *cn = node_at(t, c);
+    uint32_t e = child_pos(n)[i];
+    if (edge_anchored(e) == anchor) {
+        return;
+    }
+    if (anchor) {
+        promote(t, cn, c, edge_pos(e));
+    } else {
+        demote(t, cn, c, edge_pos(e));
+    }
+}
+
+/* The child with the fewest parents (ties: lower id). */
+static uint32_t choose_anchor(const atree_t *t, const uint32_t *ids, uint32_t n)
+{
+    uint32_t best = 0;
+    uint32_t i;
+    for (i = 1; i < n; i++) {
+        uint32_t pb = t->nodes.data[ids[best]].parents.len;
+        uint32_t pi = t->nodes.data[ids[i]].parents.len;
+        if (pi < pb || (pi == pb && ids[i] < ids[best])) {
+            best = i;
+        }
+    }
+    return best;
+}
+
 static atree_status_t level_inc(atree_t *t, uint32_t level)
 {
+    if (level > UINT16_MAX) {
+        return ATREE_ERR_LIMIT;
+    }
     while (t->level_counts.len <= level) {
         atree_status_t st = atree__u32vec_push(&t->mem, &t->level_counts, 0);
         if (st != ATREE_OK) {
@@ -743,7 +842,7 @@ static atree_status_t relevel(atree_t *t, atree__nid start, struct journalvec *j
         }
         n = node_at(t, id);
         level_dec(t, n->level);
-        n->level = level;
+        n->level = (uint16_t)level;
         for (i = 0; st == ATREE_OK && i < n->parents.len; i++) {
             st = atree__u32vec_push(&t->mem, &t->worklist, n->parents.data[i]);
         }
@@ -862,25 +961,6 @@ static atree_status_t build_leaf(atree_t *t, const atree_expr_t *e, struct journ
     return ATREE_OK;
 }
 
-/* Orders node ids by ascending parent count (insertion sort: operand sets
- * are small). Ties keep id order so the result is deterministic. */
-static void sort_by_parent_count(const atree_t *t, uint32_t *ids, uint32_t n)
-{
-    uint32_t i;
-    for (i = 1; i < n; i++) {
-        uint32_t v = ids[i];
-        uint32_t pv = t->nodes.data[v].parents.len;
-        uint32_t j = i;
-        while (j > 0 &&
-               (t->nodes.data[ids[j - 1]].parents.len > pv ||
-                (t->nodes.data[ids[j - 1]].parents.len == pv && ids[j - 1] > v))) {
-            ids[j] = ids[j - 1];
-            j--;
-        }
-        ids[j] = v;
-    }
-}
-
 /* Alg. 2 (paper §4.2.2), greedy set cover: while some existing node of the
  * same kind has all its children in the operand set, replace those children
  * by it, largest cover first. Candidates are parents of the operands. The
@@ -906,21 +986,13 @@ static atree_status_t reorganize(atree_t *t, uint8_t kind, struct atree__u32vec 
             return st;
         }
         mark_set(t, ids->data, ids->len);
-        /* A cover S is a parent of each of its members, so it is found when
-         * the parents of its least popular member are scanned. Scanning
-         * operands in ascending parent-count order therefore finds every
-         * candidate at its cheapest member, and the cap only ever skips
-         * covers made exclusively of very hot leaves. */
-        st = atree__u32vec_reserve(&t->mem, &t->worklist, ids->len);
-        if (st != ATREE_OK) {
-            return st;
-        }
-        memcpy(t->worklist.data, ids->data, (size_t)ids->len * sizeof *ids->data);
-        t->worklist.len = ids->len;
-        sort_by_parent_count(t, t->worklist.data, t->worklist.len);
-        for (i = 0; i < t->worklist.len && examined < t->max_adjust_candidates; i++) {
-            const struct atree__node *u = &t->nodes.data[t->worklist.data[i]];
-            for (j = 0; j < u->parents.len && examined < t->max_adjust_candidates; j++) {
+        /* A cover S contains its own anchor child a, and S sits in the
+         * anchored prefix of a's parent list, so scanning the anchored
+         * parents of every operand finds every cover exactly, without ever
+         * walking the long parent lists of popular leaves. */
+        for (i = 0; i < ids->len && examined < t->max_adjust_candidates; i++) {
+            const struct atree__node *u = &t->nodes.data[ids->data[i]];
+            for (j = 0; j < u->nanchor && examined < t->max_adjust_candidates; j++) {
                 atree__nid pid = u->parents.data[j];
                 const struct atree__node *p = &t->nodes.data[pid];
                 uint32_t k;
@@ -1043,6 +1115,11 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
         return st;
     }
     /* link P to N (may allocate) before any non-allocating unlink */
+    if (node_at(t, nid)->parents.len >= EDGE_POS_MAX) {
+        j->len--;
+        children_free(t, &nc);
+        return ATREE_ERR_LIMIT;
+    }
     st = atree__u32vec_push(&t->mem, &node_at(t, nid)->parents, pid);
     if (st != ATREE_OK) {
         j->len--; /* entry not yet effective; P still owns its children */
@@ -1074,6 +1151,14 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
     p->hash = new_hash;
     if (new_hash != old_hash) {
         atree__idset_remove(t, old_hash, pid);
+    }
+    /* exactly one anchor edge: the kept children carry their old flags, the
+     * new edge has none; re-choose and adjust (no allocation) */
+    {
+        uint32_t ai = choose_anchor(t, nc.data, nc.len);
+        for (i = 0; i < node_at(t, pid)->children.len; i++) {
+            set_anchor(t, pid, i, i == ai);
+        }
     }
     reset_access_child(t, pid);
     t->self_adjusted++;
@@ -1145,6 +1230,7 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
     struct atree__node *n;
     uint32_t i;
     uint32_t level = 0;
+    uint32_t anchor_i;
     atree_status_t st;
 
     atree__u32vec_init(&ids);
@@ -1204,8 +1290,12 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
         node_release(t, id);
         return st;
     }
+    {
+        const struct atree__node *nn = node_at(t, id);
+        anchor_i = choose_anchor(t, nn->children.data, nn->children.len);
+    }
     for (i = 0; i < node_at(t, id)->children.len; i++) {
-        st = link_child(t, id, i);
+        st = link_child(t, id, i, i == anchor_i);
         if (st != ATREE_OK) {
             abort_new_node(t, id, UINT32_MAX, false, false, false, false, i);
             return st;
@@ -1218,7 +1308,11 @@ static atree_status_t build_inner(atree_t *t, const atree_expr_t *e, struct jour
         }
     }
     n = node_at(t, id);
-    n->level = level + 1;
+    if (level >= UINT16_MAX) {
+        abort_new_node(t, id, UINT32_MAX, false, false, false, false, n->children.len);
+        return ATREE_ERR_LIMIT;
+    }
+    n->level = (uint16_t)(level + 1);
     reset_access_child(t, id);
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
@@ -1292,13 +1386,19 @@ static void rollback(atree_t *t, struct journalvec *j)
             struct atree__node *n = node_at(t, e->node);
             t->level_counts.data[n->level]--;
             t->level_counts.data[e->old_level]++;
-            n->level = e->old_level;
+            n->level = (uint16_t)e->old_level;
             break;
         }
         case J_REWIRED: {
             struct atree__node *p = node_at(t, e->node);
             uint32_t idx_n = child_index(p, e->added);
+            uint32_t old_anchor = UINT32_MAX;
             uint32_t k;
+            for (k = 0; k < e->old_children.len; k++) {
+                if (edge_anchored(child_pos_of_vec(&e->old_children)[k])) {
+                    old_anchor = k;
+                }
+            }
             if (idx_n != UINT32_MAX) {
                 unlink_child(t, e->node, idx_n);
                 p = node_at(t, e->node);
@@ -1314,7 +1414,7 @@ static void rollback(atree_t *t, struct journalvec *j)
                     c->use_count++;
                     t->edges++;
                 } else {
-                    /* kept: its current position is authoritative */
+                    /* kept: its current position (and flag) is authoritative */
                     child_pos_of_vec(&e->old_children)[k] = child_pos(p)[cur];
                 }
             }
@@ -1327,6 +1427,9 @@ static void rollback(atree_t *t, struct journalvec *j)
             atree__u32vec_init(&e->old_children);
             p->hash = e->old_hash;
             p->access_child = e->old_access;
+            for (k = 0; k < node_at(t, e->node)->children.len; k++) {
+                set_anchor(t, e->node, k, k == old_anchor);
+            }
             t->self_adjusted--;
             break;
         }
@@ -1618,6 +1721,7 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
         struct atree__probe probe;
         const struct atree__u64vec *subs;
         uint32_t level = 0;
+        uint32_t anchors = 0;
         if (n->kind == ATREE_NODE_FREE) {
             continue; /* a stranded slot (free-list push failed) is tolerated */
         }
@@ -1654,9 +1758,15 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (ci == UINT32_MAX) {
                 FAIL("parent link without child link", i, n->parents.data[j]);
             }
-            if (child_pos_c(p)[ci] != j) {
+            if (edge_pos(child_pos_c(p)[ci]) != j) {
                 FAIL("parent position out of date", i, n->parents.data[j]);
             }
+            if (edge_anchored(child_pos_c(p)[ci]) != (j < n->nanchor)) {
+                FAIL("anchor flag disagrees with the anchored prefix", i, j);
+            }
+        }
+        if (n->nanchor > n->parents.len) {
+            FAIL("anchored prefix longer than the parent list", i, n->nanchor);
         }
         parent_links += n->parents.len;
         probe.kind = n->kind;
@@ -1690,9 +1800,12 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
                 if (c->kind == ATREE_NODE_FREE) {
                     FAIL("child is a free slot", i, n->children.data[j]);
                 }
-                if (child_pos_c(n)[j] >= c->parents.len ||
-                    c->parents.data[child_pos_c(n)[j]] != i) {
+                if (edge_pos(child_pos_c(n)[j]) >= c->parents.len ||
+                    c->parents.data[edge_pos(child_pos_c(n)[j])] != i) {
                     FAIL("child link without matching parent slot", i, n->children.data[j]);
+                }
+                if (edge_anchored(child_pos_c(n)[j])) {
+                    anchors++;
                 }
                 if (c->level > level) {
                     level = c->level;
@@ -1701,6 +1814,9 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             }
             if (n->level != level + 1) {
                 FAIL("level != 1 + max child level", i, n->level);
+            }
+            if (anchors != 1) {
+                FAIL("inner node without exactly one anchor edge", i, anchors);
             }
             if (n->kind == ATREE_NODE_AND) {
                 bool pod = (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) == 0;

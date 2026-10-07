@@ -65,8 +65,8 @@ event and the index has more nodes per expression than the paper's.
 | | Paper, A-Tree row of Table 4 (1.39M real ads expressions) | libatree, `--paper` (1M synthetic expressions, 3000 events) |
 |---|---|---|
 | matching time | 1.6 ms | p50 15.8 ms, p99 29.2 ms, with about 27 000 matches and 44 000 nodes visited per event |
-| construction | 2.9 s | 70 s (14 200 expressions/s with the default candidate cap; see below) |
-| memory | 205 MB (147 B/expression) | 665 B/expression allocated, 829 MB RSS; 3.03M nodes, 5.71M edges |
+| construction | 2.9 s | 12.4 s (80 600 expressions/s, including parsing; see below) |
+| memory | 205 MB (147 B/expression) | 665 B/expression allocated, 828 MB RSS; 3.03M nodes, 5.69M edges |
 | machine | 2.2 GHz, 2018 | Apple M-series laptop, 2026 |
 
 What the comparison does and does not say:
@@ -79,18 +79,22 @@ What the comparison does and does not say:
   density is the same for both implementations, libatree is 26–42× faster
   than the crate; on a sparse event (`--event-size 5`) at 100k expressions
   the p50 is 0.22 ms.
-- **Construction.** libatree is clearly slower than the paper's reported
-  figure. Part of that is scope: our insert includes parsing, normalization
-  and journaling. Most of it is the reorganize/self-adjust candidate scan
-  on popular leaves, bounded by `max_adjust_candidates`. On the 100k
-  workload: all optimizations on 48k/s, cap 256 → 74k/s, cap 64 → 87k/s,
-  reorganize and self-adjust off → 105k/s, everything off → 116k/s, while
-  the edge count moves from 582 906 (cap 4096) to 586 153 (cap 256) to
-  630 920 (off). At 1M expressions the gap widens: the default cap gives
-  14 200 expressions/s, cap 256 gives 47 500/s for 1.1% more edges
-  (5 777 522 vs 5 714 435) and identical search cost. The default keeps the
-  paper's arrival-order independence for predicates with up to 4096
-  parents; deployments that insert faster than they share should lower it.
+- **Construction.** libatree builds the 1M index in 12.4 s against the
+  paper's 2.9 s for 1.39M expressions, with parsing, normalization and
+  journaling included in our figure and a workload that shares far less
+  (the paper's predicates are shared 68 times on average, so most of its
+  inserts are identity hits). The dominant cost used to be the reorganize
+  candidate scan over popular leaves: the first version ran at 14 200
+  expressions/s at 1M and needed `max_adjust_candidates = 256` to reach
+  47 500/s at the price of 1.1% more edges. Anchor lists (docs/DESIGN.md,
+  "Reorganize") make that scan exact and cheap: the default configuration
+  now inserts 80 600/s at 1M and 103 500/s at 100k, within 5% of running
+  with reorganize and self-adjust disabled (109 000/s), and the index has
+  marginally fewer edges than before (582 571 vs 582 906 at 100k; 5 689 983
+  vs 5 714 435 at 1M) because the scan never hits its cap. The cap still
+  bounds self-adjust, which scans the full parent list of a new node's
+  least popular child; lowering it to 256 changes 100k throughput by about
+  3%.
 - **Memory.** Per expression libatree uses about 4.5× the paper's figure,
   but the synthetic workload also has about 3 nodes per expression where
   the ads workload, with predicates shared 68 times on average, has far
@@ -106,7 +110,7 @@ What the comparison does and does not say:
 |---|---|---|---|
 | Node identity | commutative id per subexpression, hash table | 64-bit hash only (a collision silently merges expressions) | hash **and** structural comparison |
 | Connectives | n-ary | binary (`a and b and c` is `And(And(a,b),c)`, so association changes identity) | n-ary, flattened, canonically ordered |
-| Reorganize (Alg. 2) | yes | no | yes, bounded candidate scan |
+| Reorganize (Alg. 2) | yes | no | yes, exact via anchor lists |
 | Self-adjust (Alg. 3) | yes | no | yes, with relevel and identity re-key |
 | Phase 1 | "existing predicate matching algorithms" | evaluates every predicate | per-attribute indexes: bool lists, equality/membership buckets, sorted rays, null lists, scan lists |
 | Zero suppression / propagation on demand | yes | yes | yes |

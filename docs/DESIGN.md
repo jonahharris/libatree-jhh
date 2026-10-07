@@ -155,10 +155,19 @@ sound because NOT has been eliminated (PLAN §4.6).
 set U is rewritten greedily: among the parents of U's members with the same
 operator, pick the one whose children are all in U (largest first), replace
 those children by it, repeat. Membership tests use a per-node epoch mark
-array; the number of candidate parents examined per node is capped by
-`max_adjust_candidates` (default 4096; exceeding it is counted in
-`adjust_candidates_skipped` and only costs sharing). Sets of two operands
-are skipped because their only possible cover is the identity hit itself.
+array. Candidates come from *anchor lists*: every inner node designates
+one child as its anchor (the child with the fewest parents when the node
+was built, re-chosen on rewire), each node keeps the parents it anchors at
+the front of its parent list (`parents[0, nanchor)`), and the per-edge
+position entries carry the anchor flag in their high bit. A cover S ⊆ U
+contains its own anchor, so scanning only the anchored parents of U's
+members finds every cover while never walking the parent list of a
+popular leaf, which is rarely anybody's anchor because it was already
+popular when its parents were built. `max_adjust_candidates` (default
+4096; exceeding it is counted in `adjust_candidates_skipped` and only costs
+sharing) remains as a safety bound and still governs self-adjust. Sets of
+two operands are skipped because their only possible cover is the identity
+hit itself.
 
 **Self-adjust (M6, Alg. 3).** After a new node N is created, every parent P
 of one of N's children with the same operator and children ⊃ N.children is
@@ -185,11 +194,14 @@ linear pass (`atree__index_check`). The same benchmark showed the
 reorganize and self-adjust candidate scans running to their cap on every
 node: self-adjust now scans only the child with the fewest parents (exact,
 since a superset parent is in every child's parent list), and reorganize
-scans operands in ascending parent-count order so each cover is found at
-its cheapest member. On 100k expressions this raised insert throughput from
-34k/s to 48k/s; `max_adjust_candidates` remains the knob (256 gives 74k/s
-for under 1% of the edge savings; the default 4096 keeps the paper's
-arrival-order independence for parents up to that count).
+scans anchor lists (above). Promoting or demoting an anchor is two swaps in
+the child's parent list plus the position fix-ups, allocation free, so
+rewire and rollback can re-choose anchors without new failure paths. On
+100k expressions insert throughput went from 34k/s to 48k/s (ordering) to
+104k/s (anchors), within 5% of running with reorganize and self-adjust
+disabled, and the index has slightly fewer edges because the scan no longer
+hits its cap. `atree_validate` checks that the anchored prefix and the
+flags agree and that every inner node has exactly one anchor edge.
 
 **Journal.** Every insert records what it changed: created nodes, rewired
 parents (with their old child set, hash, level and access child) and level

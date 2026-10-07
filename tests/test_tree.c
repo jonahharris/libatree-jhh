@@ -686,6 +686,49 @@ TEST(rust_crate_example)
     return 0;
 }
 
+/* Reorganize finds covers made only of popular leaves without scanning
+ * their parent lists: `private and test` has two leaves with 200 parents
+ * each, far above a candidate cap of 8, yet it is the anchor of exactly one
+ * parent each (the other parents anchor on their rarer `exchange_id = i`
+ * leaf), so inserting `private and test and price > 1` reuses it. */
+TEST(reorganize_hot_leaf_cover)
+{
+    atree_config_t cfg;
+    atree_t *t = NULL;
+    atree_stats_t st;
+    atree_stats_t st2;
+    char buf[64];
+    int i;
+    atree_config_init(&cfg);
+    cfg.max_adjust_candidates = 8;
+    ASSERT_OK(atree_create(&cfg, DEFS, NDEFS, &t));
+    for (i = 0; i < 200; i++) {
+        snprintf(buf, sizeof buf, "private and exchange_id = %d", i);
+        ASSERT_FALSE(ins(t, (atree_id_t)(10 + i), buf));
+        snprintf(buf, sizeof buf, "test and exchange_id = %d", i);
+        ASSERT_FALSE(ins(t, (atree_id_t)(1000 + i), buf));
+    }
+    ASSERT_FALSE(ins(t, 1, "private and test"));
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.reorganized, 0);
+    ASSERT_FALSE(ins(t, 2, "private and test and price > 1"));
+    atree_stats(t, &st2);
+    ASSERT_EQ_U64(st2.reorganized, 1);
+    ASSERT_EQ_U64(st2.adjust_candidates_skipped, st.adjust_candidates_skipped);
+    ASSERT_EQ_U64(st2.nodes, st.nodes + 2); /* price > 1 and the AND over it and S1 */
+    ASSERT_EQ_U64(st2.edges, st.edges + 2);
+    ASSERT_TRUE(valid(t));
+    /* rollback restores the anchor partition: a duplicate id fails late */
+    ASSERT_STATUS(atree_insert(t, 2, "private and test and price > 2", SIZE_MAX, NULL),
+                  ATREE_ERR_DUPLICATE_ID);
+    ASSERT_TRUE(valid(t));
+    ASSERT_OK(atree_delete(t, 1));
+    ASSERT_OK(atree_delete(t, 2));
+    ASSERT_TRUE(valid(t));
+    atree_destroy(t);
+    return 0;
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(insert_search_delete_basic);
 RUN_TEST(shared_subexpressions_and_use_counts);
@@ -695,6 +738,7 @@ RUN_TEST(paper_figure_4);
 RUN_TEST(paper_figure_6);
 RUN_TEST(paper_figure_5_reorganize);
 RUN_TEST(paper_self_adjust);
+RUN_TEST(reorganize_hot_leaf_cover);
 RUN_TEST(conveniences);
 RUN_TEST(rust_crate_example);
 TEST_MAIN_END()

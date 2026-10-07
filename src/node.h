@@ -32,14 +32,22 @@ enum atree__node_kind {
 
 enum { ATREE_NODE_HAS_SUBS = 1u << 0 };
 
+/* Anchors: every inner node designates one child as its anchor (the child
+ * with the fewest parents when the node was created, re-chosen on rewire).
+ * In each node's parent list the parents it anchors come first
+ * ([0, nanchor)), and the per-edge position entries carry the anchor flag in
+ * their high bit. Reorganize (Alg. 2) only scans anchored parents: a cover
+ * set contains its own anchor, so this finds every cover while skipping the
+ * long parent lists of popular leaves, which are rarely anchors because they
+ * were already popular when their parents were built. */
 struct atree__node {
-    uint8_t kind;  /* enum atree__node_kind                                      */
-    uint8_t flags; /* ATREE_NODE_*                                                */
-    uint16_t reserved;
-    uint32_t level;                /* 1 for leaves, 1 + max(children) otherwise       */
-    uint64_t hash;                 /* structural hash (identity table)                 */
-    uint32_t use_count;            /* paper's useCount == parents.len + #subscriptions */
-    atree__nid access_child;       /* AND with propagation on demand: the waking child */
+    uint8_t kind;            /* enum atree__node_kind                                      */
+    uint8_t flags;           /* ATREE_NODE_*                                                */
+    uint16_t level;          /* 1 for leaves, 1 + max(children) otherwise; <= 65535          */
+    uint32_t nanchor;        /* parents[0, nanchor) are the parents this node is the anchor of */
+    uint64_t hash;           /* structural hash (identity table)                 */
+    uint32_t use_count;      /* paper's useCount == parents.len + #subscriptions */
+    atree__nid access_child; /* AND with propagation on demand: the waking child */
     struct atree__u32vec children; /* inner: sorted ascending, unique, len >= 2     */
     struct atree__u32vec parents;  /* every structural parent                       */
     uint32_t pred;                 /* leaf: index into the predicate slab, else UINT32_MAX    */

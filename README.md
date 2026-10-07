@@ -203,11 +203,12 @@ correspondingly faster.
 | everything off (flags 15) | 3.54 ms | 5.21 ms | 9 632 | 233 770 |
 | all on, 5 pairs per event | 0.22 ms | 0.76 ms | 1 185 | 853 |
 
-Index size for the 100 000 expressions: 409 838 nodes, 582 906 edges, about
+Index size for the 100 000 expressions: 409 792 nodes, 582 571 edges, about
 870 bytes per expression (reorganize and self-adjust removed about 48 000
-edges). Inserts run at 48 000 expressions/s with all optimizations on;
-`max_adjust_candidates` trades sharing for insert speed (256 → 74 000/s for
-under 1% more edges, off → 105 000/s). Deletes exceed 350 000/s.
+edges). Inserts run at 103 000 expressions/s with all optimizations on and
+109 000/s with reorganize and self-adjust disabled: the candidate search
+for shared subexpressions uses anchor lists and costs about 5%. Deletes
+exceed 350 000/s.
 
 **Against the Rust `a-tree` crate**, on identical datasets in the dialect
 both accept, libatree returns exactly the same matches and searches 26×
@@ -216,9 +217,8 @@ p50) in a fifth of the memory, because the crate evaluates every predicate
 per event while libatree probes per-attribute indexes. **Against the
 paper's Table 4** (1.39M real expressions: 1.6 ms, 2.9 s construction,
 205 MB) libatree at 1M synthetic expressions matches a far denser workload
-in 15.8 ms p50, constructs more slowly (14 000 expressions/s with the
-default candidate cap, 47 500/s with `max_adjust_candidates = 256` at 1.1%
-more edges) and uses about 665 bytes per expression. Details,
+in 15.8 ms p50, constructs in 12.4 s (80 600 expressions/s, parsing
+included) and uses about 665 bytes per expression. Details,
 caveats and reproduction commands are in `docs/COMPARISON.md`.
 
 Work counters, not timings, are the regression gates (`tests/test_perf.c`

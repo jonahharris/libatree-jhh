@@ -13,9 +13,16 @@ All notable changes to this project are documented here. The format follows
   verifies the predicate index in one linear pass. Found by the
   1M-expression benchmark, where validation and deletion over popular
   leaves did not finish.
-- Self-adjust scans only the child with the fewest parents (exact);
-  reorganize scans operands in ascending parent-count order. Insert
-  throughput on the 100k synthetic workload: 34k/s → 48k/s.
+- Self-adjust scans only the child with the fewest parents (exact).
+- Reorganize finds candidate covers through anchor lists: every inner node
+  designates its least popular child as its anchor, each node keeps the
+  parents it anchors at the front of its parent list, and the scan reads
+  only those prefixes. The search is exact (a cover contains its anchor)
+  and never walks a popular leaf's parent list. Insert throughput on the
+  100k synthetic workload: 34k/s → 104k/s; at 1M expressions 14k/s →
+  81k/s with the default `max_adjust_candidates`, and slightly fewer edges.
+  Node levels are now 16-bit (`ATREE_ERR_LIMIT` above 65535, previously
+  unreachable in practice); `atree_validate` checks the anchor partition.
 - `bench_synthetic` gains `--dump`, `--rust-compatible` and `--cap`;
   `bench/rust_compare` compares the Rust `a-tree` crate on identical files;
   `docs/COMPARISON.md` records the results. Baseline regenerated for the
