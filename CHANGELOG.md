@@ -43,9 +43,11 @@ All notable changes to this project are documented here. The format follows
   the slot its rollback needs, so the rollback insert never allocates.
 - A search that ran out of memory could leave a true/queued bit set for a
   node whose queue push had failed; the reset clears only queued ids, so
-  the next search on that report missed or fabricated matches. Bits are
-  now set after the push succeeds. `test_alloc_failure` requires a retry
-  after a failed search to return exactly the undisturbed count.
+  the next search on that report missed or fabricated matches. A failed
+  push now clears the bits it had set. `test_alloc_failure` requires a
+  retry after a failed search to return exactly the undisturbed count.
+  (The first version of this fix pushed before marking, which made the
+  compiler stop inlining the wake loop and cost 12% of the 1M search.)
 
 - The 32-bit CI job passed `CFLAGS=-m32` on the make command line, which
   replaces the Makefile's whole flag set, so that build ran without

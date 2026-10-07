@@ -250,8 +250,10 @@ static atree_status_t sort_matches(atree_report_t *r)
     return ATREE_OK;
 }
 
-static atree_status_t wake_range(atree_report_t *r, const atree_t *t, const struct atree__node *n,
-                                 uint32_t from, uint32_t to)
+/* Inlined into emit: out of line, the call per woken parent cost 12% of
+ * the search on the 1M-expression workload. */
+static inline atree_status_t wake_range(atree_report_t *r, const atree_t *t,
+                                        const struct atree__node *n, uint32_t from, uint32_t to)
 {
     uint32_t i;
     for (i = from; i < to; i++) {
@@ -260,14 +262,15 @@ static atree_status_t wake_range(atree_report_t *r, const atree_t *t, const stru
         if (bit_get(r->queued, pid)) {
             continue;
         }
-        /* Queue first, mark second: reset_scratch clears the bits of the
-         * ids in the queues, so a bit set for an id whose push failed
-         * would outlive this search and corrupt the next one. */
+        bit_set(r->queued, pid);
         st = atree__u32vec_push(&r->mem, &r->queues[t->nodes.data[pid].level], pid);
         if (st != ATREE_OK) {
+            /* reset_scratch clears only the ids in the queues: a bit left
+             * set for an id that never got there would outlive this
+             * search and corrupt the next one on this report. */
+            bit_clear(r->queued, pid);
             return st;
         }
-        bit_set(r->queued, pid);
     }
     return ATREE_OK;
 }
@@ -306,14 +309,15 @@ static atree_status_t seed_leaf(void *ctx, atree__nid id)
     if (bit_get(r->queued, id)) {
         return ATREE_OK;
     }
-    st = atree__u32vec_push(&r->mem, &r->queues[1], id); /* queue first, see wake_range */
-    if (st != ATREE_OK) {
-        return st;
-    }
     r->stats.predicates_matched++;
     bit_set(r->is_true, id);
     bit_set(r->queued, id);
-    return ATREE_OK;
+    st = atree__u32vec_push(&r->mem, &r->queues[1], id);
+    if (st != ATREE_OK) {
+        bit_clear(r->is_true, id); /* see wake_range */
+        bit_clear(r->queued, id);
+    }
+    return st;
 }
 
 /* Phase 1 with indexes: look up exactly the satisfied leaves per attribute. */
@@ -333,13 +337,16 @@ static atree_status_t phase1_scan(atree_report_t *r, const atree_t *t, const atr
         atree_tri_t v = atree__pred_eval(p, atree__event_value(ev, p->attr));
         r->stats.predicates_evaluated++;
         if (v == ATREE_TRUE) {
-            atree_status_t st = atree__u32vec_push(&r->mem, &r->queues[1], id); /* queue first */
-            if (st != ATREE_OK) {
-                return st;
-            }
+            atree_status_t st;
             r->stats.predicates_matched++;
             bit_set(r->is_true, id);
             bit_set(r->queued, id);
+            st = atree__u32vec_push(&r->mem, &r->queues[1], id);
+            if (st != ATREE_OK) {
+                bit_clear(r->is_true, id); /* see wake_range */
+                bit_clear(r->queued, id);
+                return st;
+            }
         }
     }
     return ATREE_OK;
