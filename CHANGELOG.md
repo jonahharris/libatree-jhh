@@ -23,6 +23,13 @@ All notable changes to this project are documented here. The format follows
   81k/s with the default `max_adjust_candidates`, and slightly fewer edges.
   Node levels are now 16-bit (`ATREE_ERR_LIMIT` above 65535, previously
   unreachable in practice); `atree_validate` checks the anchor partition.
+- `bench_synthetic` reports predicates per expression, the predicate
+  sharing ratio and parse throughput (parsing was never part of the timed
+  insert), draws predicates from a Zipf-ranked pool with `--pred-pool N`,
+  and gains the `--ads` preset that reproduces the sharing metrics of the
+  paper's real workload (§6.2); `docs/COMPARISON.md` records that
+  construction on that profile is 47× slower than the paper's figure and
+  why (bottom-up build instead of Alg. 4's lookup-first insert).
 - `bench_synthetic` gains `--dump`, `--rust-compatible` and `--cap`;
   `bench/rust_compare` compares the Rust `a-tree` crate on identical files;
   `docs/COMPARISON.md` records the results. Baseline regenerated for the

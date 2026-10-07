@@ -9,10 +9,15 @@
  *     --event-size E    (default 20)          --depth d         (default 3)
  *     --fanout f        (default 4)           --alpha a         (default 0.6)
  *     --share pct       (default 30)          --seed s          (default 1)
+ *     --pred-pool N     draw predicates from a Zipf-ranked pool of N distinct
+ *                       predicates (0 = off), which fixes the sharing ratio
  *     --flags bits      ATREE_FLAG_* to disable optimizations
  *     --verify K        brute-force check of the first K expressions
  *     --quick           CI preset: 20000 expressions, 500 events
  *     --paper           Table 3 defaults: 1000000 expressions, 3000 events
+ *     --ads             the paper's real workload metrics (§6.2): 1392196
+ *                       expressions over 122 dimensions, 973794 distinct
+ *                       predicates shared about 68 times each, 20 pairs per event
  *     --cap N           max_adjust_candidates (reorganize/self-adjust scan bound)
  *     --dump PREFIX     also write PREFIX.defs/.exprs/.events (bench_file format)
  *     --rust-compatible dialect the Rust a-tree crate accepts (no xor/xnor/all of)
@@ -146,6 +151,7 @@ static void buf_add_item(struct buf *b, uint32_t i, long long v, int quote)
 
 struct params {
     uint32_t expressions, events, dims, cardinality, event_size, depth, fanout, share_pct;
+    uint32_t pred_pool; /* distinct predicates to draw from (0 = unbounded) */
     double alpha;
     uint64_t seed;
     unsigned flags;
@@ -179,13 +185,18 @@ struct gen {
     struct zipf zval;
     /* subexpression pools per depth, for Zipf-shared reuse */
     char ***pool;
+    uint32_t **pool_npreds; /* predicates inside each pooled text */
     uint32_t *pool_len;
     struct zipf zpool;
+    /* predicate pool: a fixed population of distinct predicates drawn by
+     * Zipf rank, so the average sharing ratio is instances / pool size */
+    char **ppool;
+    struct zipf zpred;
 };
 
 #define POOL_MAX 4096
 
-static void gen_predicate(struct gen *g, struct buf *b)
+static void gen_predicate_text(struct gen *g, struct buf *b)
 {
     uint32_t d = zipf_sample(&g->zdim);
     uint32_t v = zipf_sample(&g->zval);
@@ -252,10 +263,33 @@ static void gen_predicate(struct gen *g, struct buf *b)
     }
 }
 
-static void gen_expr(struct gen *g, struct buf *b, uint32_t depth);
+/* One predicate: fresh text, or a member of the predicate pool chosen by
+ * Zipf rank (filled lazily with fresh text on first use). */
+static void gen_predicate(struct gen *g, struct buf *b)
+{
+    uint32_t idx;
+    if (g->ppool == NULL) {
+        gen_predicate_text(g, b);
+        return;
+    }
+    idx = zipf_sample(&g->zpred);
+    if (g->ppool[idx] == NULL) {
+        struct buf tmp = {NULL, 0, 0};
+        gen_predicate_text(g, &tmp);
+        g->ppool[idx] = tmp.p; /* ownership moves to the pool */
+        if (tmp.p == NULL) {
+            gen_predicate_text(g, b);
+            return;
+        }
+    }
+    buf_add(b, g->ppool[idx]);
+}
+
+/* Returns the number of predicates in the generated text. */
+static uint32_t gen_expr(struct gen *g, struct buf *b, uint32_t depth);
 
 /* Reuses a pooled subexpression at this depth with probability share_pct. */
-static int try_reuse(struct gen *g, struct buf *b, uint32_t depth)
+static int try_reuse(struct gen *g, struct buf *b, uint32_t depth, uint32_t *npreds)
 {
     uint32_t n = g->pool_len[depth];
     uint32_t idx;
@@ -267,10 +301,11 @@ static int try_reuse(struct gen *g, struct buf *b, uint32_t depth)
         idx = below(n);
     }
     buf_add(b, g->pool[depth][idx]);
+    *npreds = g->pool_npreds[depth][idx];
     return 1;
 }
 
-static void remember(struct gen *g, uint32_t depth, const char *text)
+static void remember(struct gen *g, uint32_t depth, const char *text, uint32_t npreds)
 {
     uint32_t n = g->pool_len[depth];
     if (n >= POOL_MAX) {
@@ -281,19 +316,21 @@ static void remember(struct gen *g, uint32_t depth, const char *text)
         return;
     }
     strcpy(g->pool[depth][n], text);
+    g->pool_npreds[depth][n] = npreds;
     g->pool_len[depth] = n + 1;
 }
 
-static void gen_expr(struct gen *g, struct buf *b, uint32_t depth)
+static uint32_t gen_expr(struct gen *g, struct buf *b, uint32_t depth)
 {
     size_t start = b->len;
     uint32_t roll;
+    uint32_t npreds = 0;
     if (depth >= g->p->depth) {
         gen_predicate(g, b);
-        return;
+        return 1;
     }
-    if (try_reuse(g, b, depth)) {
-        return;
+    if (try_reuse(g, b, depth, &npreds)) {
+        return npreds;
     }
     roll = below(100);
     if (g->p->rust_compatible && roll >= 90) {
@@ -308,20 +345,21 @@ static void gen_expr(struct gen *g, struct buf *b, uint32_t depth)
             if (i > 0) {
                 buf_add(b, op);
             }
-            gen_expr(g, b, depth + 1);
+            npreds += gen_expr(g, b, depth + 1);
         }
         buf_add(b, ")");
     } else if (roll < 90) {
         buf_add(b, "not ");
-        gen_expr(g, b, depth + 1);
+        npreds += gen_expr(g, b, depth + 1);
     } else {
         buf_add(b, "(");
-        gen_expr(g, b, depth + 1);
+        npreds += gen_expr(g, b, depth + 1);
         buf_add(b, roll < 95 ? " xor " : " xnor ");
-        gen_expr(g, b, depth + 1);
+        npreds += gen_expr(g, b, depth + 1);
         buf_add(b, ")");
     }
-    remember(g, depth, b->p + start);
+    remember(g, depth, b->p + start, npreds);
+    return npreds;
 }
 
 /* ---- events ------------------------------------------------------------- */
@@ -427,7 +465,9 @@ static int fill_event(struct gen *g, atree_event_t *ev, atree_attr_id_t *dims, i
 /* ---- results ------------------------------------------------------------ */
 
 struct results {
+    double parse_us_total;
     double insert_us_total;
+    uint64_t pred_instances; /* predicates across all generated expressions */
     uint32_t insert_failures;
     uint64_t nodes, leaves, edges, max_level, bytes, reorganized, self_adjusted;
     double search_p50_us, search_p99_us, search_mean_us;
@@ -463,6 +503,11 @@ static void print_json(const struct params *p, const struct results *r)
            (unsigned long long)r->total_matches, (unsigned long long)r->total_visited,
            (unsigned long long)r->total_evaluated, (unsigned long long)r->total_pred_matched,
            (unsigned long long)r->total_and_woken);
+    printf(
+        "  \"predicate_instances\": %llu, \"predicate_sharing\": %.2f, \"parse_per_sec\": %.0f,\n",
+        (unsigned long long)r->pred_instances,
+        r->leaves > 0 ? (double)r->pred_instances / (double)r->leaves : 0.0,
+        r->parse_us_total > 0 ? p->expressions / (r->parse_us_total / 1e6) : 0.0);
     printf("  \"insert_per_sec\": %.0f, \"search_p50_us\": %.2f, \"search_p99_us\": %.2f, "
            "\"search_mean_us\": %.2f, \"delete_per_sec\": %.0f,\n",
            r->insert_us_total > 0 ? p->expressions / (r->insert_us_total / 1e6) : 0.0,
@@ -484,9 +529,16 @@ static void print_human(const struct params *p, const struct results *r)
            (unsigned long long)r->edges, (unsigned long long)r->max_level,
            (double)r->bytes / (double)p->expressions, (unsigned long long)r->reorganized,
            (unsigned long long)r->self_adjusted);
-    printf("  insert: %.0f expressions/s (%u failures)\n",
+    printf("  predicates: %.1f per expression, %llu instances over %llu distinct leaves, each "
+           "shared %.1f times on average\n",
+           (double)r->pred_instances / p->expressions, (unsigned long long)r->pred_instances,
+           (unsigned long long)r->leaves,
+           r->leaves > 0 ? (double)r->pred_instances / (double)r->leaves : 0.0);
+    printf("  parse: %.0f expressions/s (not part of insert)\n",
+           r->parse_us_total > 0 ? p->expressions / (r->parse_us_total / 1e6) : 0.0);
+    printf("  insert: %.0f expressions/s (%u failures), %.1f s total\n",
            r->insert_us_total > 0 ? p->expressions / (r->insert_us_total / 1e6) : 0.0,
-           r->insert_failures);
+           r->insert_failures, r->insert_us_total / 1e6);
     printf("  search: p50 %.1f us, p99 %.1f us, mean %.1f us over %u events; per event avg %.1f "
            "matches, %.1f nodes visited, %.1f predicates evaluated (%.1f true), %.1f AND woken\n",
            r->search_p50_us, r->search_p99_us, r->search_mean_us, p->events,
@@ -587,6 +639,7 @@ static int parse_args(int argc, char **argv, struct params *p)
     p->dump = NULL;
     p->rust_compatible = 0;
     p->cap = 0;
+    p->pred_pool = 0;
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
@@ -596,6 +649,24 @@ static int parse_args(int argc, char **argv, struct params *p)
         } else if (strcmp(a, "--paper") == 0) {
             p->expressions = 1000000;
             p->events = 3000;
+        } else if (strcmp(a, "--ads") == 0) {
+            /* §6.2: 1,392,196 expressions, 122 dimensions, 973,794 distinct
+             * predicates shared 68.76 times on average (so about 48 per
+             * expression), 1..56 predicates and depth 1..9 per expression,
+             * ~20 attribute-value pairs per event. Depth 4 with 2..7
+             * children gives about 50 predicates per expression; the Zipf
+             * exponent 0.8 spreads the per-predicate sharing from tens to
+             * hundreds of thousands as in Figure 7(b). Normalization adds
+             * negated variants, so distinct leaves exceed the pool a little. */
+            p->expressions = 1392196;
+            p->events = 100;
+            p->dims = 122;
+            p->cardinality = 10000;
+            p->depth = 4;
+            p->fanout = 7;
+            p->share_pct = 50;
+            p->alpha = 0.8;
+            p->pred_pool = 973794;
         } else if (strcmp(a, "--json") == 0) {
             p->json = 1;
         } else if (strcmp(a, "--expressions") == 0) {
@@ -644,6 +715,9 @@ static int parse_args(int argc, char **argv, struct params *p)
             p->rust_compatible = 1;
         } else if (strcmp(a, "--cap") == 0) {
             p->cap = (uint32_t)strtoul(v, NULL, 10);
+            i++;
+        } else if (strcmp(a, "--pred-pool") == 0) {
+            p->pred_pool = (uint32_t)strtoul(v, NULL, 10);
             i++;
         } else {
             fprintf(stderr, "unknown option %s\n", a);
@@ -737,13 +811,22 @@ int main(int argc, char **argv)
         return 2;
     }
     g.pool = (char ***)calloc(p.depth + 1, sizeof *g.pool);
+    g.pool_npreds = (uint32_t **)calloc(p.depth + 1, sizeof *g.pool_npreds);
     g.pool_len = (uint32_t *)calloc(p.depth + 1, sizeof *g.pool_len);
-    if (g.pool == NULL || g.pool_len == NULL) {
+    if (g.pool == NULL || g.pool_npreds == NULL || g.pool_len == NULL) {
         return 2;
     }
     for (i = 0; i <= p.depth; i++) {
         g.pool[i] = (char **)calloc(POOL_MAX, sizeof **g.pool);
-        if (g.pool[i] == NULL) {
+        g.pool_npreds[i] = (uint32_t *)calloc(POOL_MAX, sizeof **g.pool_npreds);
+        if (g.pool[i] == NULL || g.pool_npreds[i] == NULL) {
+            return 2;
+        }
+    }
+    g.ppool = NULL;
+    if (p.pred_pool > 0) {
+        g.ppool = (char **)calloc(p.pred_pool, sizeof *g.ppool);
+        if (g.ppool == NULL || zipf_init(&g.zpred, p.pred_pool, p.alpha)) {
             return 2;
         }
     }
@@ -763,11 +846,14 @@ int main(int argc, char **argv)
         if (b.p != NULL) {
             b.p[0] = '\0';
         }
-        gen_expr(&g, &b, 1);
+        r.pred_instances += gen_expr(&g, &b, 1);
         if (dump_exprs != NULL) {
             fprintf(dump_exprs, "%u\t%s\n", (unsigned)(i + 1), b.p);
         }
+        t0 = bench_now_ns();
         st = atree_expr_parse(tree, b.p, b.len, &e, &err);
+        t1 = bench_now_ns();
+        r.parse_us_total += (double)(t1 - t0) / 1000.0;
         if (st != ATREE_OK) {
             fprintf(stderr, "generated expression failed to parse: %s\n  %s\n", err.message, b.p);
             return 2;

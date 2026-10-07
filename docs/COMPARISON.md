@@ -65,7 +65,7 @@ event and the index has more nodes per expression than the paper's.
 | | Paper, A-Tree row of Table 4 (1.39M real ads expressions) | libatree, `--paper` (1M synthetic expressions, 3000 events) |
 |---|---|---|
 | matching time | 1.6 ms | p50 15.8 ms, p99 29.2 ms, with about 27 000 matches and 44 000 nodes visited per event |
-| construction | 2.9 s | 12.4 s (80 600 expressions/s, including parsing; see below) |
+| construction | 2.9 s | 12.4 s (80 600 expressions/s, normalize + build; parsing timed separately) |
 | memory | 205 MB (147 B/expression) | 665 B/expression allocated, 828 MB RSS; 3.03M nodes, 5.69M edges |
 | machine | 2.2 GHz, 2018 | Apple M-series laptop, 2026 |
 
@@ -80,10 +80,12 @@ What the comparison does and does not say:
   than the crate; on a sparse event (`--event-size 5`) at 100k expressions
   the p50 is 0.22 ms.
 - **Construction.** libatree builds the 1M index in 12.4 s against the
-  paper's 2.9 s for 1.39M expressions, with parsing, normalization and
-  journaling included in our figure and a workload that shares far less
-  (the paper's predicates are shared 68 times on average, so most of its
-  inserts are identity hits). The dominant cost used to be the reorganize
+  paper's 2.9 s for 1.39M expressions. Our figure covers normalization,
+  the DAG build and journaling (the benchmark parses outside the timed
+  region, like the paper, whose expressions are already structured) on a
+  workload that shares far less: the paper's predicates are shared 68
+  times on average, so most of its inserts are identity hits, while the
+  synthetic default shares each predicate about 2.3 times. The dominant cost used to be the reorganize
   candidate scan over popular leaves: the first version ran at 14 200
   expressions/s at 1M and needed `max_adjust_candidates = 256` to reach
   47 500/s at the price of 1.1% more edges. Anchor lists (docs/DESIGN.md,
@@ -103,6 +105,74 @@ What the comparison does and does not say:
   identity table, the per-attribute index and the subscription maps.
   Trimming vector minimum capacities and packing the predicate slab are
   the obvious next steps if memory matters more than simplicity.
+
+## Construction on a paper-like sharing profile
+
+The paper's real workload (§6.2) shares each predicate 68.76 times on
+average over 973 794 distinct predicates, which implies about 48 predicates
+per expression. `bench_synthetic --ads` reproduces those metrics: 1 392 196
+expressions over 122 dimensions, predicates drawn by Zipf rank (exponent
+0.8) from a pool of 973 794 distinct predicates, depth 4 with 2–7 children,
+half of the subexpressions at each depth reused from a pool, 20
+attribute-value pairs per event. Inserts are timed without parsing, as in
+the paper, whose expressions are already structured.
+
+| | Paper (§6.2 workload) | libatree `--ads` |
+|---|---|---|
+| expressions | 1 392 196 | 1 392 196 |
+| predicates per expression | 1–56 | 54.4 on average |
+| distinct predicates | 973 794 | 915 361 leaves |
+| predicate sharing | 68.76× | 82.7× |
+| construction | 2.9 s | 137.7 s (10 100 expressions/s) |
+| memory | 205 MB | 1.43 GB RSS; 4.49M nodes, 18.7M edges |
+
+So on a profile with the paper's sharing, libatree constructs about 47×
+more slowly than the paper's figure, far more than the 4× gap on the
+default synthetic workload. The reason is structural, not a constant factor:
+
+- **Alg. 4 returns in O(1) on a hit; our build does not.** The paper
+  computes the expression's identity first (`generateID(expr)`) and returns
+  the existing node without visiting its subexpressions. libatree's `build()`
+  recurses bottom-up: every one of the 75.7M predicate instances is hashed,
+  looked up and interned, and every one of the ~29M inner-node instances
+  runs reorganize before its identity lookup, although 96% of them already
+  exist (4.49M nodes were created). The profile of this run is reorganize
+  first, then predicate hashing, then the sort in normalization.
+- **Inner-level sharing.** The paper's workload also shares subexpressions
+  at every level (2.88× even at level 9); our pool reuse of 50% per depth
+  still leaves 3.57M inner nodes for 1.39M expressions, which is also why
+  the index is seven times larger than the paper's.
+
+Making `build()` lookup-first (hash the normalized expression from its
+content, probe the identity table top-down, and verify a hit by comparing
+the stored subtree instead of rebuilding it) would make the cost of an
+insert proportional to the nodes it creates rather than to the size of the
+expression, as in the paper, while keeping exact identity. That is the
+next construction change worth making; it does not affect matching.
+
+The matching numbers of this run are not comparable to the paper's: the
+synthetic expressions are or-heavy over 122 dimensions, so a quarter of all
+expressions match every event (352 000 matches per event, 273 ms p50),
+whereas an ads workload matches a handful.
+
+## Other implementations
+
+A JEPC-based Java engine (internal documentation shared by the user) layers
+the same shared DAG with zero suppression and propagation on demand over
+type-specialised predicate indexes (an interval index for `a < x and x < b`
+shapes, an R-tree for spatial predicates, a linear scan for everything
+else). Differences worth noting against libatree: it keeps one tree per
+event schema and projects streams onto schemas (an application-level
+pattern that works with libatree as one tree per schema); it physically
+detaches an AND node from all children but its access child so a true leaf
+never iterates parents it cannot wake, whereas libatree keeps every
+structural edge and skips non-waking AND parents during the sweep; it
+recognizes two-sided range predicates as one indexed interval, whereas
+libatree indexes each side as a ray and joins them with an AND; its
+per-event truth values live in the nodes, so one tree serves one event at a
+time, whereas libatree keeps them in the caller's report so searches run
+concurrently; and its identity is a hash contract of the expression library,
+whereas libatree compares structure on every hash hit.
 
 ## Implementation differences
 

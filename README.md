@@ -217,9 +217,13 @@ p50) in a fifth of the memory, because the crate evaluates every predicate
 per event while libatree probes per-attribute indexes. **Against the
 paper's Table 4** (1.39M real expressions: 1.6 ms, 2.9 s construction,
 205 MB) libatree at 1M synthetic expressions matches a far denser workload
-in 15.8 ms p50, constructs in 12.4 s (80 600 expressions/s, parsing
-included) and uses about 665 bytes per expression. Details,
-caveats and reproduction commands are in `docs/COMPARISON.md`.
+in 15.8 ms p50, constructs in 12.4 s (80 600 expressions/s, parsing timed
+separately) and uses about 665 bytes per expression. On a profile with the
+paper's predicate sharing (`bench_synthetic --ads`: 1.39M expressions, 54
+predicates each, every predicate shared 83 times) construction takes 138 s,
+because `build()` visits every subexpression where the paper's Alg. 4
+returns in O(1) on an identity hit. Details, caveats and reproduction
+commands are in `docs/COMPARISON.md`.
 
 Work counters, not timings, are the regression gates (`tests/test_perf.c`
 and `make bench-check` against `bench/baseline.json`): zero suppression
