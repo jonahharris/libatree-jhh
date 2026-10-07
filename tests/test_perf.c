@@ -318,6 +318,50 @@ TEST(churn_is_bounded)
     return 0;
 }
 
+/* Growth under writes: a report's bitsets cover every node, so a tree that
+ * keeps growing forces them to grow too. That growth must be geometric: 600
+ * inserts between searches, each crossing a 64-node boundary every few
+ * inserts, must cost the searches a handful of allocator calls, not two per
+ * boundary. */
+TEST(report_growth_is_geometric)
+{
+    struct test_alloc ta;
+    atree_config_t cfg;
+    atree_t *t = NULL;
+    atree_event_t *ev = NULL;
+    atree_report_t *rep = NULL;
+    char buf[64];
+    int i;
+    size_t attempts;
+    test_alloc_init(&ta);
+    atree_config_init(&cfg);
+    cfg.allocator = &ta.a;
+    ASSERT_OK(atree_create(&cfg, DEFS, NDEFS, &t));
+    ASSERT_FALSE(ins(t, 1, "p and x = 1"));
+    ASSERT_OK(atree_event_create(t, &ev));
+    ASSERT_OK(atree_event_set_bool(ev, "p", true));
+    ASSERT_OK(atree_event_set_int(ev, "x", 1));
+    ASSERT_OK(atree_report_create(t, &rep));
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_EQ_U64(atree_report_count(rep), 1);
+    attempts = 0;
+    for (i = 0; i < 600; i++) {
+        size_t before;
+        snprintf(buf, sizeof buf, "x1 = %d and x2 = %d", i, i * 7);
+        ASSERT_FALSE(ins(t, (atree_id_t)(i + 2), buf));
+        before = ta.attempts;
+        ASSERT_OK(atree_search(t, ev, rep));
+        ASSERT_EQ_U64(atree_report_count(rep), 1);
+        attempts += ta.attempts - before;
+    }
+    ASSERT_TRUE(attempts <= 16); /* two bitsets, a few doublings; exact growth was ~40 */
+    atree_report_destroy(rep);
+    atree_event_destroy(ev);
+    atree_destroy(t);
+    ASSERT_TRUE(test_alloc_clean(&ta));
+    return 0;
+}
+
 /* Index independence: predicates on attributes the event does not touch,
  * and non-matching equalities on attributes it does touch, cost nothing in
  * phase 1. Adding ten thousand of them leaves predicates_evaluated unchanged. */
@@ -387,4 +431,5 @@ RUN_TEST(sharing);
 RUN_TEST(reorganize_and_self_adjust_sharing);
 RUN_TEST(allocation_free_steady_state);
 RUN_TEST(churn_is_bounded);
+RUN_TEST(report_growth_is_geometric);
 TEST_MAIN_END()

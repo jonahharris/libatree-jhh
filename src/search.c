@@ -99,40 +99,38 @@ void atree_report_destroy(atree_report_t *r)
     atree__free(&mem, r, sizeof *r);
 }
 
-/* Grows the scratch to the tree's current size; zero-fills only new words. */
+/* Grows the scratch to cover the tree's nodes. The bitsets grow
+ * geometrically: a tree under steady writes crosses a 64-node boundary
+ * every few inserts, and growing to the exact size would make every
+ * search after such an insert copy two bitsets of nodes/8 bytes. Only the
+ * new words are zeroed; bits past nodes.len are never set. */
 static atree_status_t ensure_capacity(atree_report_t *r, const atree_t *t)
 {
-    uint32_t words = (t->nodes.len + 63) / 64;
+    uint32_t need = (t->nodes.len + 63) / 64;
     uint32_t nq = t->max_level + 1;
     if (nq < 2) {
         nq = 2;
     }
-    if (words > r->words) {
+    if (need > r->words) {
+        uint32_t words = r->words == 0 ? 16 : r->words;
         uint64_t *a;
         uint64_t *b;
-        if (r->words == 0) {
-            a = atree__alloc_array(&r->mem, words, sizeof *a);
-            b = a != NULL ? atree__alloc_array(&r->mem, words, sizeof *b) : NULL;
-            if (b == NULL) {
+        while (words < need) {
+            words = words > UINT32_MAX / 2 ? need : words * 2;
+        }
+        a = atree__alloc_array(&r->mem, words, sizeof *a);
+        b = a != NULL ? atree__alloc_array(&r->mem, words, sizeof *b) : NULL;
+        if (b == NULL) {
+            if (a != NULL) {
                 atree__free_array(&r->mem, a, words, sizeof *a);
-                return ATREE_ERR_NOMEM;
             }
-        } else {
-            a = atree__realloc_array(&r->mem, r->is_true, r->words, words, sizeof *a);
-            if (a == NULL) {
-                return ATREE_ERR_NOMEM;
-            }
-            r->is_true = a;
-            b = atree__realloc_array(&r->mem, r->queued, r->words, words, sizeof *b);
-            if (b == NULL) {
-                /* is_true already grown; keep sizes consistent by shrinking back */
-                uint64_t *back =
-                    atree__realloc_array(&r->mem, r->is_true, words, r->words, sizeof *a);
-                if (back != NULL) {
-                    r->is_true = back;
-                }
-                return ATREE_ERR_NOMEM;
-            }
+            return ATREE_ERR_NOMEM;
+        }
+        if (r->words != 0) {
+            memcpy(a, r->is_true, (size_t)r->words * sizeof *a);
+            memcpy(b, r->queued, (size_t)r->words * sizeof *b);
+            atree__free_array(&r->mem, r->is_true, r->words, sizeof *a);
+            atree__free_array(&r->mem, r->queued, r->words, sizeof *b);
         }
         memset(a + r->words, 0, (size_t)(words - r->words) * sizeof *a);
         memset(b + r->words, 0, (size_t)(words - r->words) * sizeof *b);
