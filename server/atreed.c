@@ -705,7 +705,10 @@ static void cmd_subscribe_query(struct conn *conn, struct args *args)
     const char *expr;
     atree_error_t err;
     atree_status_t st;
-    if (args_count(args) < 3 || !parse_u64(args_at(args, 1, &len), len, &id)) {
+    const char *idtext = args_count(args) < 3 ? NULL : args_at(args, 1, &len);
+    /* Two statements: an out-parameter read in the same argument list that
+     * sets it has unspecified order (x86-64 gcc evaluates right to left). */
+    if (idtext == NULL || !parse_u64(idtext, len, &id)) {
         reply_err(conn, "ERR usage: ATREE.SUBSCRIBE id expression");
         return;
     }
@@ -732,7 +735,8 @@ static void cmd_unsubscribe_query(struct conn *conn, struct args *args)
     uint64_t id;
     size_t len;
     atree_status_t st;
-    if (args_count(args) != 2 || !parse_u64(args_at(args, 1, &len), len, &id)) {
+    const char *idtext = args_count(args) != 2 ? NULL : args_at(args, 1, &len);
+    if (idtext == NULL || !parse_u64(idtext, len, &id)) {
         reply_err(conn, "ERR usage: ATREE.UNSUBSCRIBE id");
         return;
     }
