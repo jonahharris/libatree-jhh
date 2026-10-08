@@ -193,6 +193,8 @@ def main():
         m1 = allsub.read()
         m2 = allsub.read()
         check(m1[1] == "atree:*" and m2[1] == "atree:*", "all gets both", m1, m2)
+        check(m1[2].startswith('{"id":7,"event":{"price": 51') and m2[2].startswith('{"id":8,"event":{'),
+              "catch-all payload carries the id", m1, m2)
         check("subscribers:2" in r.call("ATREE.STATS"), "two subscribers")
         sub.close()
         allsub.close()
@@ -257,7 +259,8 @@ def main():
         t, body = watcher._msg()
         check(t == b"D" and watcher.rows([(t, body)]) == [["20", 'country="CA";price=9']], "watch row", t, body)
         t, body = listener._msg()
-        check(t == b"A" and b"atree_all\0" in body and body.endswith(b'country="CA";price=9\0'), "pg notification", t, body)
+        check(t == b"A" and b"atree_all\0" in body and body.endswith(b'{"id":20,"event":"country=\\"CA\\";price=9"}\0'),
+              "pg notification", t, body)
         watcher.s.close()
         listener.s.close()
         time.sleep(0.2)

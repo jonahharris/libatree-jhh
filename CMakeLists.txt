@@ -54,6 +54,7 @@ if(ATREE_BUILD_SHARED)
     add_library(atree_shared SHARED ${ATREE_SOURCES})
     set_target_properties(atree_shared PROPERTIES
         OUTPUT_NAME atree
+        EXPORT_NAME atree
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR})
     target_include_directories(atree_shared

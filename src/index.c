@@ -59,7 +59,7 @@ atree_status_t atree__index_init(struct atree *t)
     memset(ix, 0, sizeof *ix);
     atree__bucketvec_init(&ix->buckets);
     atree__u32vec_init(&ix->free_buckets);
-    atree__u32vec_init(&ix->list_pos);
+    atree__u32slab_init(&ix->list_pos);
     atree__u32vec_init(&ix->null_attrs);
     if (n == 0) {
         return ATREE_OK;
@@ -106,7 +106,7 @@ void atree__index_free(struct atree *t)
     }
     atree__bucketvec_free(&t->mem, &ix->buckets);
     atree__u32vec_free(&t->mem, &ix->free_buckets);
-    atree__u32vec_free(&t->mem, &ix->list_pos);
+    atree__u32slab_free(&t->mem, &ix->list_pos);
     atree__u32vec_free(&t->mem, &ix->null_attrs);
     memset(ix, 0, sizeof *ix);
 }
@@ -160,9 +160,9 @@ enum atree__route atree__index_route(const struct atree *t, const struct atree__
 
 static atree_status_t list_pos_reserve(struct atree *t, atree__nid id)
 {
-    struct atree__u32vec *lp = &t->index.list_pos;
+    struct atree__u32slab *lp = &t->index.list_pos;
     while (lp->len <= id) {
-        atree_status_t st = atree__u32vec_push(&t->mem, lp, UINT32_MAX);
+        atree_status_t st = atree__u32slab_push(&t->mem, lp, UINT32_MAX);
         if (st != ATREE_OK) {
             return st;
         }
@@ -180,21 +180,21 @@ static atree_status_t list_add(struct atree *t, struct atree__u32vec *list, atre
     if (st != ATREE_OK) {
         return st;
     }
-    t->index.list_pos.data[id] = list->len - 1;
+    *atree__u32slab_at(&t->index.list_pos, id) = list->len - 1;
     return ATREE_OK;
 }
 
 static void list_remove(struct atree *t, struct atree__u32vec *list, atree__nid id)
 {
-    uint32_t pos = t->index.list_pos.data[id];
+    uint32_t pos = *atree__u32slab_at(&t->index.list_pos, id);
     uint32_t last = list->len - 1;
     if (pos != last) {
         atree__nid moved = list->data[last];
         list->data[pos] = moved;
-        t->index.list_pos.data[moved] = pos;
+        *atree__u32slab_at(&t->index.list_pos, moved) = pos;
     }
     list->len--;
-    t->index.list_pos.data[id] = UINT32_MAX;
+    *atree__u32slab_at(&t->index.list_pos, id) = UINT32_MAX;
 }
 
 /* ---- buckets ------------------------------------------------------------ */
@@ -551,7 +551,7 @@ static void check_list(struct check *c, const struct atree__u32vec *list, enum a
             check_fail(c, "leaf in the wrong list", id, want);
             return;
         }
-        if (id >= c->t->index.list_pos.len || c->t->index.list_pos.data[id] != i) {
+        if (id >= c->t->index.list_pos.len || *atree__u32slab_at(&c->t->index.list_pos, id) != i) {
             check_fail(c, "list position out of date", id, i);
             return;
         }

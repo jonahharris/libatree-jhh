@@ -11,14 +11,18 @@
  *   redis-cli -p 7777 ATREE.EVENT '{"price": 12, "country": "US"}'
  *
  *   psql -h 127.0.0.1 -p 7777 -c "ATREE.SUBSCRIBE 7 'price > 10'"
- *   psql ... -c "WATCH 7"                           # streams one row per match
+ *   psql ... -c "LISTEN atree_7"                    # notification per match
+ *   WATCH 7 streams one row per match to a client that reads rows as they
+ *   arrive (libpq single-row mode, pgx); psql itself shows nothing until
+ *   the connection ends.
  *
  *   curl -XPUT localhost:7777/queries/7 -d "price > 10"
  *   curl -N localhost:7777/subscribe/7              # Server-Sent Events
  *   curl localhost:7777/events -d '{"price": 12}'
  *
  * Commands (RESP and Postgres; case-insensitive; the ATREE. prefix is
- * optional):
+ * optional except for SUBSCRIBE/UNSUBSCRIBE, whose bare forms are Redis
+ * pub/sub):
  *   ATREE.DEFINE name type      ATREE.CREATE          ATREE.SUBSCRIBE id expr
  *   ATREE.UNSUBSCRIBE id        ATREE.EVENT payload   ATREE.COUNT
  *   ATREE.STATS                 ATREE.VALIDATE        HELP  PING  QUIT
@@ -454,15 +458,35 @@ static void append_payload_json(struct buf *b, const char *payload, size_t len)
     buf_append_byte(b, '"');
 }
 
-static void push_resp(struct conn *conn, uint64_t id, const char *payload, size_t len)
+/* The catch-all channels carry no id in their name, so their payload is the
+ * SSE object, {"id":N,"event":...}; a per-id channel delivers the event text. */
+static void catch_all_payload(struct buf *b, uint64_t id, const char *payload, size_t len)
+{
+    char head[24];
+    buf_append(b, "{\"id\":", 6);
+    buf_append(b, head, (size_t)snprintf(head, sizeof head, "%" PRIu64, id));
+    buf_append(b, ",\"event\":", 9);
+    append_payload_json(b, payload, len);
+    buf_append_byte(b, '}');
+}
+
+static void push_resp(struct conn *conn, uint64_t sub_id, uint64_t id, const char *payload,
+                      size_t len)
 {
     char chan[48];
-    size_t n = id == SUB_ALL ? (size_t)snprintf(chan, sizeof chan, "atree:*")
-                             : (size_t)snprintf(chan, sizeof chan, "atree:%" PRIu64, id);
+    size_t n = sub_id == SUB_ALL ? (size_t)snprintf(chan, sizeof chan, "atree:*")
+                                 : (size_t)snprintf(chan, sizeof chan, "atree:%" PRIu64, sub_id);
     conn_write_array(conn, 3);
     conn_write_bulk(conn, "message", 7);
     conn_write_bulk(conn, chan, n);
-    conn_write_bulk(conn, payload, len);
+    if (sub_id == SUB_ALL) {
+        struct buf b = {0};
+        catch_all_payload(&b, id, payload, len);
+        conn_write_bulk(conn, b.data, b.len);
+        buf_clear(&b);
+    } else {
+        conn_write_bulk(conn, payload, len);
+    }
 }
 
 static void push_sse(struct conn *conn, uint64_t id, const char *payload, size_t len)
@@ -491,14 +515,25 @@ static void push_pg_row(struct conn *conn, uint64_t id, const char *payload, siz
 }
 
 /* Postgres NotificationResponse: 'A', int32 length, int32 pid, channel, payload. */
-static void push_pg_notify(struct conn *conn, uint64_t id, const char *payload, size_t len)
+static void push_pg_notify(struct conn *conn, uint64_t sub_id, uint64_t id, const char *payload,
+                           size_t len)
 {
     char chan[48];
-    size_t chanlen = id == SUB_ALL ? (size_t)snprintf(chan, sizeof chan, "atree_all")
-                                   : (size_t)snprintf(chan, sizeof chan, "atree_%" PRIu64, id);
-    size_t size = 4 + 4 + chanlen + 1 + len + 1;
-    char *msg = xmalloc(1 + size);
-    char *p = msg;
+    size_t chanlen = sub_id == SUB_ALL
+        ? (size_t)snprintf(chan, sizeof chan, "atree_all")
+        : (size_t)snprintf(chan, sizeof chan, "atree_%" PRIu64, sub_id);
+    struct buf b = {0};
+    size_t size;
+    char *msg;
+    char *p;
+    if (sub_id == SUB_ALL) {
+        catch_all_payload(&b, id, payload, len);
+        payload = b.data;
+        len = b.len;
+    }
+    size = 4 + 4 + chanlen + 1 + len + 1;
+    msg = xmalloc(1 + size);
+    p = msg;
     *p++ = 'A';
     p[0] = (char)((size >> 24) & 0xff);
     p[1] = (char)((size >> 16) & 0xff);
@@ -513,10 +548,11 @@ static void push_pg_notify(struct conn *conn, uint64_t id, const char *payload, 
     p[len] = '\0';
     conn_write_raw(conn, msg, 1 + size);
     xfree(msg);
+    buf_clear(&b);
 }
 
-/* Delivers the current report's matches to every subscriber. The catch-all
- * subscribers receive every matched id once each. */
+/* Delivers the current report's matches to every subscriber: a per-id
+ * subscriber once, a catch-all subscriber once per matched id. */
 static void deliver(const char *payload, size_t len)
 {
     const atree_id_t *m = atree_report_matches(S.rep);
@@ -551,7 +587,7 @@ static void deliver(const char *payload, size_t len)
             }
             switch (s->kind) {
             case SUB_RESP:
-                push_resp(s->conn, s->id == SUB_ALL ? SUB_ALL : id, payload, len);
+                push_resp(s->conn, s->id, id, payload, len);
                 break;
             case SUB_SSE:
                 push_sse(s->conn, id, payload, len);
@@ -561,7 +597,7 @@ static void deliver(const char *payload, size_t len)
                 break;
             case SUB_PG_LISTEN:
             default:
-                push_pg_notify(s->conn, s->id == SUB_ALL ? SUB_ALL : id, payload, len);
+                push_pg_notify(s->conn, s->id, id, payload, len);
                 break;
             }
             wrote = true;
@@ -1302,6 +1338,8 @@ int main(int argc, char **argv)
     const char *host = "127.0.0.1";
     const char *port = "7777";
     const char *unixsock = "";
+    const char *defs_path = NULL;
+    const char *exprs_path = NULL;
     char where[256];
     const char *wherep = where;
     struct net_opts opts;
@@ -1315,19 +1353,22 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--unixsock") == 0 && i + 1 < argc) {
             unixsock = argv[++i];
         } else if (strcmp(argv[i], "--defs") == 0 && i + 1 < argc) {
-            if (load_defs(argv[++i]) != 0) {
-                return 1;
-            }
+            defs_path = argv[++i];
         } else if (strcmp(argv[i], "--exprs") == 0 && i + 1 < argc) {
-            if (load_exprs(argv[++i]) != 0) {
-                return 1;
-            }
+            exprs_path = argv[++i];
         } else {
             fprintf(
                 stderr,
                 "usage: atreed [--host H] [--port P] [--unixsock PATH] [--defs F] [--exprs F]\n");
             return 2;
         }
+    }
+    /* Files load after the options are read, so their order does not matter. */
+    if (defs_path != NULL && load_defs(defs_path) != 0) {
+        return 1;
+    }
+    if (exprs_path != NULL && load_exprs(exprs_path) != 0) {
+        return 1;
     }
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 0);

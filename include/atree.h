@@ -81,7 +81,8 @@ typedef enum atree_status {
     ATREE_ERR_DUPLICATE_ID,    /* subscription id already present                    */
     ATREE_ERR_NOT_FOUND,       /* subscription id not present                        */
     ATREE_ERR_TOO_DEEP,        /* expression nesting exceeds atree_config_t.max_depth */
-    ATREE_ERR_LIMIT,           /* a capacity limit was reached (nodes, lists, ids)   */
+    ATREE_ERR_LIMIT,           /* a capacity limit: node count, list length, level
+                                  (65535), or max_expr_nodes for one expression       */
     ATREE_ERR_INVALID_LITERAL, /* NaN/inf float, empty list, integer overflow, ...   */
     ATREE_ERR_CORRUPT,         /* atree_validate() found an inconsistency            */
     ATREE_ERR_CANCELLED        /* a caller-supplied callback asked to stop           */

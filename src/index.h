@@ -75,7 +75,7 @@ struct atree__index {
     struct atree__u32vec null_attrs; /* attributes whose `nulls` list is non-empty: the
                                         only ones phase 1 must look at when the event
                                         leaves them undefined */
-    struct atree__u32vec list_pos;   /* per node id: position in its single list, or NONE */
+    struct atree__u32slab list_pos;  /* per node id: position in its single list, or NONE */
     uint64_t indexed;                /* leaves in bool/eq/member/ray/null structures */
     uint64_t scanned;                /* leaves in scan lists */
 };
