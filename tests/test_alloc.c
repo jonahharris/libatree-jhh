@@ -15,7 +15,9 @@ TEST(default_allocator_round_trip)
     struct atree__mem m;
     void *p;
     atree__mem_init(&m, NULL);
-    ASSERT_EQ_PTR(m.a.alloc, atree_default_allocator()->alloc);
+    /* Function pointers compare directly: converting them to void * is
+     * not ISO C (gcc -Wpedantic rejects it), so no ASSERT_EQ_PTR here. */
+    ASSERT_TRUE(m.a.alloc == atree_default_allocator()->alloc);
     p = atree__alloc(&m, 100);
     ASSERT_NOT_NULL(p);
     ASSERT_EQ_U64(m.live, 100);
