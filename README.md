@@ -48,6 +48,22 @@ atree_event_destroy(ev);
 atree_destroy(tree);
 ```
 
+That snippet is compiled and run by `make check`, so it cannot drift from
+the API, but it checks no return values. `examples/` has three complete,
+commented programs that do, built by `make examples` and run as tests by
+`make check` and `ctest`:
+
+- `examples/basic.c`: every attribute type, text and builder expressions,
+  parse errors, events, search, the work counters, three-valued semantics,
+  delete, statistics, and the destroy order.
+- `examples/threads.c`: one tree shared by a writer and several readers
+  through the pthread lock adapter in `extras/`.
+- `examples/advanced.c`: callback, exists and allow-list searches, a custom
+  allocator, the configuration knobs, `atree_validate` and Graphviz export.
+
+Install with `make install PREFIX=/usr/local` and build against it with
+`cc -std=c99 app.c $(pkg-config --cflags --libs atree)`.
+
 ## Why this library
 
 - **Faithful to the paper.** Every algorithm is implemented: node sharing
@@ -85,6 +101,7 @@ make check-tsan      # the thread tests under ThreadSanitizer
 make check-valgrind  # the test binaries under valgrind (Linux; skipped when valgrind is absent)
 make bench           # benchmarks (see below)
 make tools           # tools/atree_shell
+make examples        # examples/*.c (also run by make check)
 make install PREFIX=/usr/local
 ```
 
@@ -230,6 +247,9 @@ objects are:
   by attribute id for the hot path; `atree_event_set_undefined` and
   `atree_event_clear`. Strings are resolved by lookup against the tree's
   interned literals; a string the tree has never seen equals no literal.
+  Wherever a string length is taken, `SIZE_MAX` (or a NULL array of
+  lengths) means NUL-terminated. Events and reports are bound to the tree
+  they were created on and must be destroyed before it.
 - **Reports** (`atree_report_t`): one per matching thread, reusable;
   `atree_search` fills it and `atree_report_matches` returns the matched ids
   sorted ascending, valid until the next search or destroy;
@@ -305,7 +325,7 @@ can come from:
 Use one `atree_event_t` and one `atree_report_t` per matching thread; both
 are bound to the tree they were created on and are reusable indefinitely. A
 custom allocator must be thread-safe if the library is used from several
-threads.
+threads. `examples/threads.c` is a complete program for option 1.
 
 ## Allocator
 
@@ -400,6 +420,8 @@ allocator calls.
 - `src/` — implementation; `docs/DESIGN.md` explains it module by module.
 - `tests/` — unit, differential, allocation-failure, thread and work-count
   tests; `fuzz/` — libFuzzer harness and corpus; `bench/` — benchmarks.
+- `examples/` — complete, commented programs over the public API, run as
+  tests.
 - `extras/` — header-only lock adapters; `tools/` — `atree_shell`, the
   interactive shell and line-protocol server (POSIX); `server/` — `atreed`,
   the Redis/Postgres/HTTP continuous-query server, with its vendored

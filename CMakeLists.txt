@@ -126,6 +126,33 @@ if(ATREE_BUILD_TOOLS AND NOT WIN32)
     target_compile_options(atree_shell PRIVATE ${ATREE_WARNINGS})
 endif()
 
+# ---- examples ----------------------------------------------------------------
+
+# Built like a user's program (public header only) with the full warning set,
+# and run as tests: each example asserts its own results. threads.c uses
+# pthreads directly, so it is skipped on Windows.
+option(ATREE_BUILD_EXAMPLES "Build the example programs and run them as tests" ON)
+if(ATREE_BUILD_EXAMPLES)
+    enable_testing()
+    find_package(Threads)
+    file(GLOB ATREE_EXAMPLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.c)
+    foreach(src ${ATREE_EXAMPLE_SOURCES})
+        get_filename_component(name ${src} NAME_WE)
+        if(name STREQUAL "threads" AND (WIN32 OR NOT Threads_FOUND))
+            continue()
+        endif()
+        add_executable(example_${name} ${src})
+        set_target_properties(example_${name} PROPERTIES OUTPUT_NAME ${name}
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/examples)
+        target_link_libraries(example_${name} PRIVATE atree_static)
+        if(name STREQUAL "threads")
+            target_link_libraries(example_${name} PRIVATE Threads::Threads)
+        endif()
+        target_compile_options(example_${name} PRIVATE ${ATREE_WARNINGS})
+        add_test(NAME example_${name} COMMAND example_${name})
+    endforeach()
+endif()
+
 # ---- install -----------------------------------------------------------------
 
 include(GNUInstallDirs)

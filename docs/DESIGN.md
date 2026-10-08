@@ -41,6 +41,7 @@ or an AND/OR inner node of the shared DAG; *edges* are parent-child links.
 | `src/search.c` | Report object (per-thread scratch: two bitsets, one queue per level, match list, counters) and Alg. 6 matching with zero suppression and propagation on demand; reset walks the level queues (dirty list) instead of clearing bitsets. Conveniences: callback delivery, exists, allow-list filtering. |
 | `src/graphviz.c` | DOT export: one rank per level, leaves at the bottom, parent→child edges, access-child edges in bold, subscription ids as external labels, constant-true ids in a note. Predicate text is DSL-escaped for DOT. |
 | `extras/atree_lock_pthread.h`, `extras/atree_lock_win32.h` | Header-only `atree_lock_t` adapters over `pthread_rwlock_t` and `SRWLOCK`. |
+| `examples/basic.c`, `examples/threads.c`, `examples/advanced.c` | Complete, commented programs over the public API that assert their own results: the walkthrough, a tree shared between threads through the pthread adapter, and the secondary APIs (callback/exists/allow-list search, custom allocator, flags, validate, Graphviz). Built with the full warning set and run by `make check` and `ctest`, as is the README's opening snippet (`make check-readme`), so the documentation cannot drift from the API. |
 | `tools/atree_shell.c` | Line-oriented shell over the public API: a stdin REPL, a `select()` server (TCP on loopback or a Unix socket) that runs one tree for many clients and sends `NOTIFY` lines to the owner of a matched continuous query, and the client. Single-threaded, so the tree needs no lock; a client's queries are deleted when it disconnects. Shares the text formats with `bench_file` through `bench/bench_format.h`. Smoke-tested by `tests/shell_smoke.sh`. |
 | `server/atreed.c`, `server/json.c` | The continuous-query server: one tree served to Redis, Postgres and HTTP clients on one port over pogocache's event loop (`server/deps/pogocache`, vendored MIT). Commands are written once against the argument list every protocol parses to; matches are delivered per subscriber protocol (pub/sub message, streamed `WATCH` rows, `LISTEN` notifications, SSE frames). One loop thread, so no lock and same-thread flushes for pushes. `json.c` is the event-object reader. `server/tests/run.py` speaks the three wire protocols raw. |
 | `bench/bench_synthetic.c`, `bench/bench_file.c` | Synthetic workload after the paper's ABE-Gen generator (§6.1) (Zipf dimensions/values, operator mix, shared subexpressions, `--verify` brute-force check, `--check` baseline gate) and a file-driven benchmark; `bench/convert_rust_search_json.py` converts the Rust crate's dataset. |
@@ -385,7 +386,9 @@ the baseline is a deliberate commit.
 
 - Strict C99 (`-std=c99 -Wpedantic`) plus the warning set in the Makefile,
   `-Werror` by default. The header is additionally compiled as C11, C17 and
-  C++11 by `make check-header`.
+  C++11 by `make check-header`; the examples and the README snippet are
+  compiled with the same warnings and run by `make check-examples` and
+  `make check-readme`, both part of `make check`.
 - `make check-asan` / `check-ubsan` / `check-tsan` / `check-valgrind` rebuild
   into separate directories with the corresponding instrumentation.
 - CI matrix (`.github/workflows/ci.yml`): gcc debug and release, gcc

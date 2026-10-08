@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `examples/`: three complete, commented programs over the public API
+  (`basic.c`, `threads.c`, `advanced.c`) that check every status and
+  assert their own results; `make examples` builds them and `make check`
+  and `ctest` run them with the full warning set. The README's opening
+  snippet is compiled and run too (`make check-readme`).
+- `include/atree.h` now states the contracts callers were left to guess:
+  `SIZE_MAX` or a NULL length array means NUL-terminated for every string
+  parameter, `atree_attr_lookup` returns `ATREE_ATTR_INVALID` for an unknown
+  name, the `atree_error_t` argument of parse and insert may be NULL,
+  `atree_report_matches` may be NULL when the count is 0, events and reports
+  are bound to their tree and destroyed before it, and `atree_search` and
+  `atree_expr_eval` reject objects from another tree.
 - `server/atreed`: a continuous-query server over the library that serves
   Redis, Postgres and HTTP clients on one port, built on pogocache's
   networking core (vendored under `server/deps/pogocache`, MIT, with the

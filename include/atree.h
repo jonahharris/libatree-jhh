@@ -205,9 +205,12 @@ ATREE_API atree_status_t atree_create(const atree_config_t *cfg, const atree_att
 /* Releases everything. tree may be NULL. Requires exclusion like a write. */
 ATREE_API void atree_destroy(atree_t *tree);
 
+/* Attribute ids are dense, 0 .. atree_attr_count() - 1, in declaration
+ * order. Lookup of an unknown name yields ATREE_ATTR_INVALID; a bad id yields
+ * NULL from atree_attr_name and ATREE_TYPE_BOOL from atree_attr_type. */
 ATREE_API atree_attr_id_t atree_attr_lookup(const atree_t *tree, const char *name);
 ATREE_API size_t atree_attr_count(const atree_t *tree);
-ATREE_API const char *atree_attr_name(const atree_t *tree, atree_attr_id_t id); /* NULL if bad */
+ATREE_API const char *atree_attr_name(const atree_t *tree, atree_attr_id_t id);
 ATREE_API atree_type_t atree_attr_type(const atree_t *tree, atree_attr_id_t id);
 
 /* ------------------------------------------------------------------------ */
@@ -216,7 +219,10 @@ ATREE_API atree_type_t atree_attr_type(const atree_t *tree, atree_attr_id_t id);
 
 /* An immutable expression tree owned by the caller. Built against a tree so
  * that attribute names and types are validated and the tree's allocator is
- * used. atree_insert_expr() copies what it needs. */
+ * used. atree_insert_expr() copies what it needs, so the caller frees the
+ * expression (atree_expr_free) whenever it likes; freeing never touches the
+ * tree, but evaluating, printing or inserting it does, so do those while the
+ * tree it was built on is alive. */
 typedef struct atree_expr atree_expr_t;
 
 typedef enum atree_op {
@@ -243,7 +249,9 @@ typedef enum atree_null_op {
 
 /* Leaf builders return NULL on unknown attribute, type mismatch, invalid
  * literal (NaN/inf, empty list) or out of memory. Use atree_expr_parse() when
- * a diagnostic is needed. Lists are copied, sorted and deduplicated. */
+ * a diagnostic is needed. Lists are copied, sorted and deduplicated. String
+ * lengths: `len` may be SIZE_MAX for a NUL-terminated string; `lens` may be
+ * NULL (every string NUL-terminated) or hold SIZE_MAX for individual ones. */
 ATREE_API atree_expr_t *atree_expr_var(const atree_t *tree, const char *attr);
 ATREE_API atree_expr_t *atree_expr_cmp_int(const atree_t *tree, const char *attr, atree_op_t op,
                                            int64_t value);
@@ -275,7 +283,9 @@ ATREE_API atree_expr_t *atree_expr_not(atree_expr_t *child);
 ATREE_API atree_expr_t *atree_expr_xor(atree_expr_t *a, atree_expr_t *b);
 ATREE_API atree_expr_t *atree_expr_xnor(atree_expr_t *a, atree_expr_t *b);
 
-/* Parses DSL text (see README "Expression language"). len may be SIZE_MAX. */
+/* Parses DSL text (see README "Expression language"). len may be SIZE_MAX;
+ * err may be NULL. On failure *out is NULL and err, if given, has the status,
+ * the byte offset and length of the offending token and a message. */
 ATREE_API atree_status_t atree_expr_parse(const atree_t *tree, const char *text, size_t len,
                                           atree_expr_t **out, atree_error_t *err);
 ATREE_API void atree_expr_free(atree_expr_t *expr); /* NULL ok */
@@ -294,9 +304,10 @@ typedef enum atree_tri { ATREE_FALSE = 0, ATREE_TRUE = 1, ATREE_UNDEFINED = 2 } 
 /* Reference (brute-force) evaluation of one expression against one event with
  * the paper's semantics (§3.2, Table 2). The tree matches a subscription iff
  * this returns ATREE_TRUE. Exported because it is useful for callers' tests.
- * A read path: takes the tree's read lock (string literals are resolved
- * through the tree), so do not call it from a callback that runs under the
- * lock. */
+ * Returns ATREE_UNDEFINED if the event was created on a different tree than
+ * the expression. A read path: takes the tree's read lock (string literals
+ * are resolved through the tree), so do not call it from a callback that
+ * runs under the lock. */
 ATREE_API atree_tri_t atree_expr_eval(const atree_expr_t *expr, const atree_event_t *event);
 
 /* ------------------------------------------------------------------------ */
@@ -305,9 +316,11 @@ ATREE_API atree_tri_t atree_expr_eval(const atree_expr_t *expr, const atree_even
 
 typedef uint64_t atree_id_t;
 
-/* Inserts DSL text under id. expr_len may be SIZE_MAX. Fails with
- * ATREE_ERR_DUPLICATE_ID if id is present. On any failure the tree is
- * unchanged. Several ids may share one expression. */
+/* Inserts DSL text under id. expr_len may be SIZE_MAX; err may be NULL and
+ * is filled on any failure (offset/length refer to the text for syntax and
+ * type errors, SIZE_MAX otherwise). Fails with ATREE_ERR_DUPLICATE_ID if id
+ * is present. On any failure the tree is unchanged. Several ids may share
+ * one expression; ids are the caller's, any uint64_t value. */
 ATREE_API atree_status_t atree_insert(atree_t *tree, atree_id_t id, const char *expr,
                                       size_t expr_len, atree_error_t *err);
 ATREE_API atree_status_t atree_insert_expr(atree_t *tree, atree_id_t id, const atree_expr_t *expr,
@@ -323,10 +336,18 @@ ATREE_API size_t atree_count(const atree_t *tree); /* number of subscriptions */
 /* ------------------------------------------------------------------------ */
 
 /* An assignment of values to attributes. Every attribute starts undefined.
- * Reusable: buffers are kept across atree_event_clear(). Setting a value
- * validates the type against the attribute; strings are interned by lookup
- * against the tree (unknown strings equal nothing); lists are copied, sorted,
- * deduplicated; a float NaN is stored as undefined. */
+ * Reusable: buffers are kept across atree_event_clear(), so one event per
+ * matching thread, reused for every search, allocates nothing in steady
+ * state. Setting a value validates the type against the attribute and fails
+ * with ATREE_ERR_UNKNOWN_ATTR or ATREE_ERR_TYPE_MISMATCH; setting an
+ * attribute again replaces its value; strings are interned by lookup against
+ * the tree (unknown strings equal nothing); lists are copied, sorted,
+ * deduplicated; a float NaN is stored as undefined. String lengths follow the
+ * builder convention (SIZE_MAX or a NULL `lens` means NUL-terminated).
+ *
+ * An event is bound to the tree it was created on: it reads the tree's
+ * attribute table, including when destroyed, so destroy events before their
+ * tree, and only search a tree with events created on it. */
 ATREE_API atree_status_t atree_event_create(const atree_t *tree, atree_event_t **out);
 ATREE_API void atree_event_destroy(atree_event_t *event); /* NULL ok */
 ATREE_API void atree_event_clear(atree_event_t *event);   /* all attributes -> undefined */
@@ -366,18 +387,24 @@ ATREE_API atree_status_t atree_event_set_undefined_id(atree_event_t *event, atre
 /* ------------------------------------------------------------------------ */
 
 /* Holds the result of one search and the scratch state a search needs
- * (bitsets, level queues). Reusable; create one per matching thread. A
- * warmed-up search performs no allocator calls. */
+ * (bitsets, level queues). Reusable; create one per matching thread and
+ * reuse it for every search: a warmed-up search performs no allocator
+ * calls. Bound to the tree it was created on like an event; destroy reports
+ * before their tree. */
 typedef struct atree_report atree_report_t;
 
 ATREE_API atree_status_t atree_report_create(const atree_t *tree, atree_report_t **out);
 ATREE_API void atree_report_destroy(atree_report_t *report); /* NULL ok */
 
-/* Finds every subscription the event satisfies. The report is reset first. */
+/* Finds every subscription the event satisfies (evaluates to true under the
+ * three-valued semantics; see README "Semantics"). The report is reset
+ * first. The event and report must have been created on this tree
+ * (ATREE_ERR_INVALID_ARG otherwise). */
 ATREE_API atree_status_t atree_search(const atree_t *tree, const atree_event_t *event,
                                       atree_report_t *report);
 
-/* Matched ids, sorted ascending; valid until the next search or destroy. */
+/* Matched ids, sorted ascending; valid until the next search or destroy.
+ * The pointer may be NULL when the count is 0. */
 ATREE_API size_t atree_report_count(const atree_report_t *report);
 ATREE_API const atree_id_t *atree_report_matches(const atree_report_t *report);
 

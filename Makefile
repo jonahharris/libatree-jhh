@@ -2,7 +2,8 @@
 # CMakeLists.txt. Compatible with GNU make 3.81.
 #
 # Targets: all check check-asan check-ubsan check-tsan check-valgrind
-#          check-header bench fuzz format format-check install clean
+#          check-header check-examples check-readme examples tools bench fuzz
+#          format format-check install clean
 # Variables: CC CXX AR MODE=debug|release WERROR=1|0 BUILD=dir PREFIX=/usr/local
 #            EXTRA_CFLAGS EXTRA_LDFLAGS (e.g. -m32; appended, so the warning
 #            set stays in force. Setting CFLAGS on the command line instead
@@ -75,12 +76,15 @@ FUZZ_BINS := $(patsubst fuzz/%.c,$(BUILD)/fuzz/%,$(FUZZ_SRCS))
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_BINS := $(patsubst tools/%.c,$(BUILD)/tools/%,$(TOOL_SRCS))
 
+EXAMPLE_SRCS := $(wildcard examples/*.c)
+EXAMPLE_BINS := $(patsubst examples/%.c,$(BUILD)/examples/%,$(EXAMPLE_SRCS))
+
 FORMAT_FILES := $(wildcard include/*.h src/*.c src/*.h tests/*.c tests/*.h tests/*.cpp \
-                           bench/*.c bench/*.h fuzz/*.c extras/*.h tools/*.c)
+                           bench/*.c bench/*.h fuzz/*.c extras/*.h tools/*.c examples/*.c)
 
 .PHONY: all static shared check check-asan check-ubsan check-tsan check-valgrind \
-        check-header check-fuzz-compile check-tools bench bench-check tools fuzz format \
-        format-check install clean help
+        check-header check-fuzz-compile check-tools check-examples check-readme examples \
+        bench bench-check tools fuzz format format-check install clean help
 
 all: static shared
 
@@ -110,7 +114,7 @@ $(BUILD)/tests/%: tests/%.c $(STLIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MF $@.d -o $@ $< $(STLIB) $(LDFLAGS) $(TEST_LDFLAGS)
 
-check: $(TEST_BINS) check-header check-fuzz-compile check-tools
+check: $(TEST_BINS) check-header check-fuzz-compile check-tools check-examples check-readme
 	@status=0; for t in $(TEST_BINS); do \
 	    echo "RUN $$t"; $$t || status=1; \
 	done; \
@@ -191,6 +195,30 @@ tools: $(TOOL_BINS)
 check-tools: $(TOOL_BINS)
 	tests/shell_smoke.sh $(BUILD)/tools/atree_shell
 
+# ---- examples ----------------------------------------------------------------
+
+# Built like a user's program: public header only (no -Isrc), full warning
+# set. Each example asserts its own results, so check-examples runs them as
+# tests; threads.c is POSIX and needs -pthread.
+$(BUILD)/examples/%: examples/%.c $(STLIB) include/atree.h extras/atree_lock_pthread.h
+	@mkdir -p $(dir $@)
+	$(CC) -Iinclude -std=c99 -O2 -g $(WARNINGS) $(SAN) $(EXTRA_CFLAGS) -o $@ $< $(STLIB) \
+	    $(LDFLAGS) $(if $(filter threads,$*),-pthread)
+
+examples: $(EXAMPLE_BINS)
+	@echo "built: $(EXAMPLE_BINS)"
+	@echo "run:   $(BUILD)/examples/basic   (examples/README.md describes each one)"
+
+check-examples: $(EXAMPLE_BINS)
+	@status=0; for e in $(EXAMPLE_BINS); do \
+	    echo "RUN $$e"; \
+	    $$e > $$e.out 2>&1 || { cat $$e.out; echo "EXAMPLE FAILED: $$e"; status=1; }; \
+	done; exit $$status
+
+# The first ```c block of README.md must compile warning-free and run.
+check-readme: $(STLIB)
+	tests/readme_snippet.sh $(BUILD) "$(CC) $(SAN) $(EXTRA_CFLAGS)" $(STLIB) "$(LDFLAGS)"
+
 bench: $(BENCH_BINS)
 	@echo "built: $(BENCH_BINS)"
 	@echo "run:   $(BUILD)/bench/bench_synthetic [--quick|--paper] [--json] [--check bench/baseline.json]"
@@ -231,7 +259,8 @@ clean:
 
 help:
 	@echo "targets: all check check-asan check-ubsan check-tsan check-valgrind check-header"
-	@echo "         tools check-tools bench fuzz format format-check install clean"
+	@echo "         examples check-examples check-readme tools check-tools bench fuzz"
+	@echo "         format format-check install clean"
 	@echo "vars:    CC CXX MODE=debug|release WERROR=1|0 BUILD=dir PREFIX=path EXTRA_CFLAGS EXTRA_LDFLAGS"
 
 -include $(DEPS) $(TEST_DEPS)
