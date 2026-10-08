@@ -296,8 +296,11 @@ can come from:
    `extras/atree_lock_win32.h` are ready-made adapters);
 2. your own synchronization around calls;
 3. build-swap-retire: fill a new tree, publish its pointer, wait until every
-   reader has fetched the new pointer, destroy the old one (the thread test
-   does exactly this with a per-reader generation counter).
+   reader has moved to it, destroy the old one. Events and reports are bound
+   to the tree they were created on (destroying an event reads the tree's
+   attribute table), so a reader must release the old tree's event and
+   report before it signals that it has moved; the thread test does exactly
+   this with a per-reader generation counter.
 
 Use one `atree_event_t` and one `atree_report_t` per matching thread; both
 are bound to the tree they were created on and are reusable indefinitely. A

@@ -309,9 +309,10 @@ runs eight unlocked readers against one tree and compares every result with
 the single-threaded answer, then readers plus a churning writer through the
 pthread adapter (soundness of every returned id, structure validated by the
 writer), then a build-swap-retire sequence in which the old tree is
-destroyed only after every reader has fetched the new pointer (readers
-publish the generation they last saw; a fixed grace period is not safe on
-a loaded machine); `make check-tsan` runs it under ThreadSanitizer.
+destroyed only after every reader has moved to the new one (a reader
+publishes the generation it fetched once it has released the old tree's
+event and report, which are bound to that tree; a fixed grace period is not
+safe on a loaded machine); `make check-tsan` runs it under ThreadSanitizer.
 
 ## Configuration and locking
 

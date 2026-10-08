@@ -140,10 +140,19 @@ def http_req(port, method, path, body=None):
     return r.status, data
 
 
+FAILED = False
+
+
 def check(cond, what, *seen):
+    global FAILED
     if not cond:
+        FAILED = True
         print("FAIL:", what, *seen)
         sys.exit(1)
+
+
+def expect(seen, want, what):
+    check(seen == want, what, "saw", repr(seen), "wanted", repr(want))
 
 
 def main():
@@ -158,37 +167,37 @@ def main():
             except OSError:
                 time.sleep(0.1)
         r = Resp(port)
-        check(r.call("PING") == "PONG", "ping")
-        check(r.call("ATREE.DEFINE", "price", "int") == "OK", "define")
-        check(r.call("ATREE.DEFINE", "country", "string") == "OK", "define")
-        check(r.call("ATREE.DEFINE", "tags", "string_list") == "OK", "define")
-        check(r.call("ATREE.DEFINE", "score", "float") == "OK", "define")
-        check(r.call("ATREE.CREATE") == "OK", "create")
-        check(r.call("ATREE.SUBSCRIBE", "7", "price > 10 and country = 'US'") == "OK", "subscribe 7")
-        check(r.call("ATREE.SUBSCRIBE", "8", "tags one of ['a', 'b']") == "OK", "subscribe 8")
+        expect(r.call("PING"), "PONG", "ping")
+        expect(r.call("ATREE.DEFINE", "price", "int"), "OK", "define")
+        expect(r.call("ATREE.DEFINE", "country", "string"), "OK", "define")
+        expect(r.call("ATREE.DEFINE", "tags", "string_list"), "OK", "define")
+        expect(r.call("ATREE.DEFINE", "score", "float"), "OK", "define")
+        expect(r.call("ATREE.CREATE"), "OK", "create")
+        expect(r.call("ATREE.SUBSCRIBE", "7", "price > 10 and country = 'US'"), "OK", "subscribe 7")
+        expect(r.call("ATREE.SUBSCRIBE", "8", "tags one of ['a', 'b']"), "OK", "subscribe 8")
         bad = r.call("ATREE.SUBSCRIBE", "9", "price >")
         check(isinstance(bad, tuple) and "syntax error" in bad[1], "bad expression", bad)
         check(r.call("ATREE.EVENT", 'price=12;country="US"') == [7], "event line", )
-        check(r.call("ATREE.EVENT", '{"price": 12, "country": "US", "tags": ["b"]}') == [7, 8], "event json")
-        check(r.call("ATREE.EVENT", "price", "5", "tags", '["a"]') == [8], "event kv")
+        expect(r.call("ATREE.EVENT", '{"price": 12, "country": "US", "tags": ["b"]}'), [7, 8], "event json")
+        expect(r.call("ATREE.EVENT", "price", "5", "tags", '["a"]'), [8], "event kv")
         bad = r.call("ATREE.EVENT", '{"price": "oops"}')
         check(isinstance(bad, tuple) and "type mismatch" in bad[1], "bad json type", bad)
         bad = r.call("ATREE.EVENT", "price=xx")
         check(isinstance(bad, tuple) and "bad item" in bad[1], "bad line value", bad)
-        check(r.call("ATREE.COUNT") == 2, "count")
+        expect(r.call("ATREE.COUNT"), 2, "count")
         check("nodes:" in r.call("ATREE.STATS"), "stats")
-        check(r.call("ATREE.VALIDATE") == "OK", "validate")
+        expect(r.call("ATREE.VALIDATE"), "OK", "validate")
 
         # Redis pub/sub delivery to another connection, then its departure.
         sub = Resp(port)
-        check(sub.call("SUBSCRIBE", "atree:7") == ["subscribe", "atree:7", 1], "subscribe channel")
-        check(r.call("ATREE.EVENT", '{"price": 50, "country": "US"}') == [7], "event for sub")
+        expect(sub.call("SUBSCRIBE", "atree:7"), ["subscribe", "atree:7", 1], "subscribe channel")
+        expect(r.call("ATREE.EVENT", '{"price": 50, "country": "US"}'), [7], "event for sub")
         msg = sub.read()
         check(msg == ["message", "atree:7", '{"price": 50, "country": "US"}'], "pubsub message", msg)
-        check(r.call("ATREE.EVENT", '{"price": 1, "tags": ["a"]}') == [8], "event not for sub")
+        expect(r.call("ATREE.EVENT", '{"price": 1, "tags": ["a"]}'), [8], "event not for sub")
         allsub = Resp(port)
-        check(allsub.call("SUBSCRIBE", "atree:*") == ["subscribe", "atree:*", 1], "subscribe all")
-        check(r.call("ATREE.EVENT", '{"price": 51, "country": "US", "tags": ["a"]}') == [7, 8], "event two")
+        expect(allsub.call("SUBSCRIBE", "atree:*"), ["subscribe", "atree:*", 1], "subscribe all")
+        expect(r.call("ATREE.EVENT", '{"price": 51, "country": "US", "tags": ["a"]}'), [7, 8], "event two")
         check(sub.read()[2].startswith('{"price": 51'), "sub gets 7")
         m1 = allsub.read()
         m2 = allsub.read()
@@ -226,7 +235,7 @@ def main():
         while b": subscribed\n\n" not in head:
             head += sse.recv(65536)
         check(b"text/event-stream" in head, "sse headers", head)
-        check(r.call("ATREE.EVENT", '{"score": 1.2}') == [10], "event for sse")
+        expect(r.call("ATREE.EVENT", '{"score": 1.2}'), [10], "event for sse")
         frame = b""
         while b"\n\n" not in frame:
             frame += sse.recv(65536)
@@ -255,7 +264,7 @@ def main():
         listener = Pg(port)
         msgs = listener.query("LISTEN atree_all")
         check(any(t == b"C" for t, _ in msgs), "listen complete", msgs)
-        check(r.call("ATREE.EVENT", 'country="CA";price=9') == [20], "event for watchers")
+        expect(r.call("ATREE.EVENT", 'country="CA";price=9'), [20], "event for watchers")
         t, body = watcher._msg()
         check(t == b"D" and watcher.rows([(t, body)]) == [["20", 'country="CA";price=9']], "watch row", t, body)
         t, body = listener._msg()
@@ -265,7 +274,7 @@ def main():
         listener.s.close()
         time.sleep(0.2)
         check("subscribers:0" in r.call("ATREE.STATS"), "pg subscribers gone")
-        check(r.call("QUIT") == "OK", "quit")
+        expect(r.call("QUIT"), "OK", "quit")
         print("atreed tests: ok")
     finally:
         srv.terminate()
@@ -274,7 +283,8 @@ def main():
         except subprocess.TimeoutExpired:
             srv.kill()
             out = ""
-        if "--verbose" in sys.argv:
+        if FAILED or "--verbose" in sys.argv:
+            print("--- atreed output ---")
             print(out)
 
 

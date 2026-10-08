@@ -310,17 +310,22 @@ static void *reader_follow(void *arg)
     atree_report_t *rep = NULL;
     while (1) {
         atree_t *cur;
+        int gen;
         int stop;
         test_mutex_lock(&r->pub->mu);
         cur = r->pub->current;
+        gen = r->pub->generation;
         stop = r->pub->stop;
-        r->seen_generation = r->pub->generation;
         test_mutex_unlock(&r->pub->mu);
         if (stop) {
             break;
         }
         if (cur != seen) {
-            /* new tree: events and reports are per tree */
+            /* New tree. The event and report are bound to the tree they were
+             * created on (destroying an event reads its tree's attribute
+             * table), so they must go before this reader reports that it
+             * has moved on, which is what lets the publisher retire the old
+             * tree. */
             atree_report_destroy(rep);
             atree_event_destroy(ev);
             rep = NULL;
@@ -333,6 +338,9 @@ static void *reader_follow(void *arg)
             (void)atree_event_set_bool(ev, "b0", true);
             seen = cur;
         }
+        test_mutex_lock(&r->pub->mu);
+        r->seen_generation = gen; /* nothing of ours refers to an older tree now */
+        test_mutex_unlock(&r->pub->mu);
         if (atree_search(cur, ev, rep) != ATREE_OK) {
             r->errors++;
         }
@@ -378,12 +386,13 @@ TEST(build_swap_retire)
         pub.current = fresh;
         pub.generation = gen_no;
         test_mutex_unlock(&pub.mu);
-        /* Retire only once every reader has fetched the new pointer. A
-         * reader records the generation it saw at each fetch, and it fetches
-         * only between searches, so when all of them report this generation
-         * none can still be inside a search on `old`. This is the
-         * quiescence wait a real deployment needs too (an epoch or RCU
-         * scheme); a fixed grace period is not safe on a loaded machine. */
+        /* Retire only once every reader has moved to the new tree. A reader
+         * publishes the generation it fetched after it has released the
+         * event and report of the previous tree and before it searches, so
+         * when all of them report this generation nothing refers to `old`.
+         * This is the quiescence wait a real deployment needs too (an epoch
+         * or RCU scheme); a fixed grace period is not safe on a loaded
+         * machine. */
         for (;;) {
             int all_moved = 1;
             test_mutex_lock(&pub.mu);
