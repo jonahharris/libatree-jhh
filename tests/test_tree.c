@@ -72,7 +72,7 @@ static int matches_are(const atree_report_t *rep, const atree_id_t *want, size_t
 static void set_all_bools(atree_event_t *ev, int n, bool value)
 {
     int i;
-    char name[4];
+    char name[16];
     for (i = 1; i <= n; i++) {
         snprintf(name, sizeof name, "p%d", i);
         (void)atree_event_set_bool(ev, name, value);

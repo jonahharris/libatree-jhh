@@ -81,4 +81,4 @@ jobs:
       - name: regression gates (deterministic work counts vs bench/baseline.json)
         run: make MODE=release bench-check
       - name: file benchmark on the Rust crate's dataset
-        run: build/bench/bench_file bench/data/rust_search.defs bench/data/rust_search.exprs bench/data/rust_search.events --repeat 50
+        run: build-release/bench/bench_file bench/data/rust_search.defs bench/data/rust_search.exprs bench/data/rust_search.events --repeat 50

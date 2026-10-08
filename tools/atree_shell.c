@@ -989,6 +989,20 @@ static int run_server(struct shell *sh, const char *spec)
     return 0;
 }
 
+/* Writes all of `p`, retrying short writes; nonzero when the peer is gone. */
+static int write_all(int fd, const char *p, size_t n)
+{
+    while (n > 0) {
+        ssize_t w = write(fd, p, n);
+        if (w <= 0) {
+            return -1;
+        }
+        p += w;
+        n -= (size_t)w;
+    }
+    return 0;
+}
+
 static int run_client(const char *host, const char *port)
 {
     int fd = open_connection(host, port);
@@ -1029,9 +1043,11 @@ static int run_client(const char *host, const char *port)
             ssize_t n = read(0, buf, MAX_LINE);
             if (n <= 0) {
                 stdin_open = 0;
-                (void)write(fd, "QUIT\n", 5);
-            } else {
-                (void)write(fd, buf, (size_t)n);
+                if (write_all(fd, "QUIT\n", 5) != 0) {
+                    break;
+                }
+            } else if (write_all(fd, buf, (size_t)n) != 0) {
+                break;
             }
         }
     }

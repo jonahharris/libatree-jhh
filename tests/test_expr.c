@@ -703,10 +703,11 @@ TEST(lookup_and_intern)
     atree__pred_free(&g.tree->mem, &p);
     atree_expr_free(e);
 
-    e = atree_expr_var(g.tree, "b0");
-    ASSERT_STATUS(
-        atree__expr_pred_lookup(atree_expr_not(e), &g.tree->mem, &g.tree->strings, &p, &dropped),
-        ATREE_ERR_INVALID_ARG);
+    e = atree_expr_not(atree_expr_var(g.tree, "b0")); /* not a leaf */
+    ASSERT_NOT_NULL(e);
+    ASSERT_STATUS(atree__expr_pred_lookup(e, &g.tree->mem, &g.tree->strings, &p, &dropped),
+                  ATREE_ERR_INVALID_ARG);
+    atree_expr_free(e);
     gen_free(&g);
     return 0;
 }
