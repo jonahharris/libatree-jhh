@@ -178,7 +178,7 @@ newest first. Pre-existing nodes only ever return to their previous use
 counts, so they survive. The string table is the one thing a failed insert
 may leave behind: literals interned before the failure stay interned (they
 are never freed anyway); the DAG, subscriptions and statistics are exactly
-as before. `test_alloc_failure` fails every allocation point of a 12-insert
+as before. `test_alloc_failure` fails every allocation point of a 14-insert
 script and checks shape, validity, search results and leak-freedom each
 time.
 
@@ -187,7 +187,9 @@ level 1. Phase 2 drains level queues bottom-up; an AND node is evaluated
 with bit lookups over its children (all at lower levels, hence final), an
 OR node is true the moment it is woken (only a true child wakes it), a
 true node emits its subscriptions (found through a per-node slot array
-into the subscription lists) and enqueues its parents, and an AND parent
+into the subscription lists; a node's first id is stored inline in its
+list header and a heap list is allocated only for the second, since almost
+every subscribed node carries exactly one id) and enqueues its parents, and an AND parent
 is enqueued only by its access child. The matched ids are sorted
 ascending by an LSD radix sort (11-bit digits, as many passes as the
 largest id needs) in a scratch array that grows with the match vector, so

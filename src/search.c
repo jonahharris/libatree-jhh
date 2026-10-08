@@ -282,9 +282,10 @@ static atree_status_t emit(atree_report_t *r, const atree_t *t, atree__nid id,
     uint32_t i;
     atree_status_t st;
     if ((n->flags & ATREE_NODE_HAS_SUBS) != 0) {
-        const struct atree__u64vec *subs = atree__node_sublist(t, id);
-        for (i = 0; subs != NULL && i < subs->len; i++) {
-            st = atree__u64vec_push(&r->mem, &r->matches, subs->data[i]);
+        uint32_t nsubs;
+        const atree_id_t *subs = atree__node_subs(t, id, &nsubs);
+        for (i = 0; i < nsubs; i++) {
+            st = atree__u64vec_push(&r->mem, &r->matches, subs[i]);
             if (st != ATREE_OK) {
                 return st;
             }

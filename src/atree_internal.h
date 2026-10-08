@@ -134,7 +134,7 @@ static inline void atree__wrunlock(atree_t *t)
     }
 }
 
-/* Subscription ids attached to a node, or NULL. */
-const struct atree__u64vec *atree__node_sublist(const atree_t *t, atree__nid id);
+/* The subscription ids attached to a node: `*n` of them, or NULL and 0. */
+const atree_id_t *atree__node_subs(const atree_t *t, atree__nid id, uint32_t *n);
 
 #endif /* ATREE_INTERNAL_H */

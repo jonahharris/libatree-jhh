@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- A node's first subscription id is stored inline in its list header; a
+  heap list is allocated only for the second id and released again when
+  the node drops back to one. Almost every subscribed node carries one id,
+  so this removes one allocation per insert and about 32 bytes per
+  subscription (2.5% of the index at 100k synthetic expressions).
+
 ### Added
 - `server/atreed`: a continuous-query server over the library that serves
   Redis, Postgres and HTTP clients on one port, built on pogocache's

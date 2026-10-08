@@ -29,6 +29,8 @@ static const char *const SCRIPT[] = {
     "a and b and i = 1 and f < 2 and s <> 'z'",
     "(a or b) and (i = 1 or i = 2) and (s = 'x' or s = 'y')",
     "not a",
+    "a and i = 1", /* a second and a third id on one node: the inline id spills to a list */
+    "a and i = 1",
 };
 #define NSCRIPT (sizeof SCRIPT / sizeof SCRIPT[0])
 

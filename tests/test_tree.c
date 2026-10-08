@@ -234,6 +234,76 @@ TEST(shared_subexpressions_and_use_counts)
     return 0;
 }
 
+/* Several ids on one node: the first is stored inline, the second spills
+ * to a list, and removals collapse back without losing the node. */
+TEST(ids_sharing_one_node)
+{
+    struct test_alloc ta;
+    atree_config_t cfg;
+    atree_t *t = NULL;
+    atree_event_t *ev = NULL;
+    atree_report_t *rep = NULL;
+    atree_stats_t st;
+    atree_id_t all[] = {10, 20, 30, 40, 50};
+    atree_id_t m20_40[] = {20, 40};
+    atree_id_t m20[] = {20};
+    atree_id_t m20_60[] = {20, 60};
+    size_t i;
+
+    test_alloc_init(&ta);
+    atree_config_init(&cfg);
+    cfg.allocator = &ta.a;
+    ASSERT_OK(atree_create(&cfg, DEFS, NDEFS, &t));
+    for (i = 0; i < 5; i++) {
+        ASSERT_FALSE(ins(t, all[i], "country = 'US'"));
+    }
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.nodes, 1);
+    ASSERT_EQ_U64(st.subscriptions, 5);
+    ASSERT_TRUE(valid(t));
+
+    ASSERT_OK(atree_event_create(t, &ev));
+    ASSERT_OK(atree_report_create(t, &rep));
+    ASSERT_OK(atree_event_set_string(ev, "country", "US", 2));
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_TRUE(matches_are(rep, all, 5));
+
+    ASSERT_OK(atree_delete(t, 30)); /* from the middle of the list */
+    ASSERT_OK(atree_delete(t, 10));
+    ASSERT_OK(atree_delete(t, 50)); /* the last one */
+    ASSERT_TRUE(valid(t));
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_TRUE(matches_are(rep, m20_40, 2));
+    ASSERT_STATUS(atree_delete(t, 30), ATREE_ERR_NOT_FOUND);
+
+    ASSERT_OK(atree_delete(t, 40)); /* back to one id: inline again */
+    ASSERT_TRUE(valid(t));
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.nodes, 1);
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_TRUE(matches_are(rep, m20, 1));
+
+    ASSERT_FALSE(ins(t, 60, "country = 'US'")); /* spills a second time */
+    ASSERT_TRUE(valid(t));
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_TRUE(matches_are(rep, m20_60, 2));
+
+    ASSERT_OK(atree_delete(t, 60));
+    ASSERT_OK(atree_delete(t, 20));
+    ASSERT_TRUE(valid(t));
+    atree_stats(t, &st);
+    ASSERT_EQ_U64(st.nodes, 0);
+    ASSERT_EQ_U64(st.subscriptions, 0);
+    ASSERT_OK(atree_search(t, ev, rep));
+    ASSERT_EQ_U64(atree_report_count(rep), 0);
+
+    atree_report_destroy(rep);
+    atree_event_destroy(ev);
+    atree_destroy(t);
+    ASSERT_TRUE(test_alloc_clean(&ta));
+    return 0;
+}
+
 TEST(duplicate_ids_and_argument_errors)
 {
     atree_t *t = NULL;
@@ -771,6 +841,7 @@ TEST(reorganize_hot_leaf_cover)
 TEST_MAIN_BEGIN()
 RUN_TEST(insert_search_delete_basic);
 RUN_TEST(shared_subexpressions_and_use_counts);
+RUN_TEST(ids_sharing_one_node);
 RUN_TEST(duplicate_ids_and_argument_errors);
 RUN_TEST(constant_expressions);
 RUN_TEST(paper_figure_4);

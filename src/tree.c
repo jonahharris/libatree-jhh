@@ -86,7 +86,10 @@ static void free_dag(atree_t *t)
     atree__u64map_free(&t->mem, &t->subs);
     atree__u32vec_free(&t->mem, &t->sub_slot);
     for (i = 0; i < t->sublists.len; i++) {
-        atree__u64vec_free(&t->mem, &t->sublists.data[i]);
+        struct atree__sublist *l = &t->sublists.data[i];
+        if (l->cap != 0) {
+            atree__free_array(&t->mem, l->u.many, l->cap, sizeof *l->u.many);
+        }
     }
     atree__sublistvec_free(&t->mem, &t->sublists);
     atree__u32vec_free(&t->mem, &t->free_sublists);
@@ -645,23 +648,95 @@ static void pred_slot_release(atree_t *t, uint32_t slot)
 
 /* ---- subscriptions ------------------------------------------------------ */
 
-const struct atree__u64vec *atree__node_sublist(const atree_t *t, atree__nid id)
+static const atree_id_t *sublist_ids(const struct atree__sublist *l)
+{
+    return l->cap == 0 ? &l->u.one : l->u.many;
+}
+
+const atree_id_t *atree__node_subs(const atree_t *t, atree__nid id, uint32_t *n)
 {
     uint32_t slot = t->sub_slot.data[id];
-    return slot == UINT32_MAX ? NULL : &t->sublists.data[slot];
+    const struct atree__sublist *l;
+    if (slot == UINT32_MAX) {
+        *n = 0;
+        return NULL;
+    }
+    l = &t->sublists.data[slot];
+    *n = l->len;
+    return sublist_ids(l);
+}
+
+/* Appends an id. The first id is stored inline and never allocates; the
+ * second moves both to a heap list, which then grows geometrically. */
+static atree_status_t sublist_push(atree_t *t, struct atree__sublist *l, atree_id_t id)
+{
+    if (l->cap == 0) {
+        atree_id_t first;
+        atree_id_t *many;
+        if (l->len == 0) {
+            l->u.one = id;
+            l->len = 1;
+            return ATREE_OK;
+        }
+        first = l->u.one;
+        many = atree__alloc_array(&t->mem, ATREE_VEC_MIN_CAP, sizeof *many);
+        if (many == NULL) {
+            return ATREE_ERR_NOMEM;
+        }
+        many[0] = first;
+        many[1] = id;
+        l->u.many = many;
+        l->cap = ATREE_VEC_MIN_CAP;
+        l->len = 2;
+        return ATREE_OK;
+    }
+    if (l->len == l->cap) {
+        atree_status_t st = ATREE_OK;
+        if (l->len == UINT32_MAX) {
+            return ATREE_ERR_LIMIT;
+        }
+        l->u.many = atree__vec_grow(&t->mem, l->u.many, sizeof *l->u.many, l->cap, l->len + 1,
+                                    &l->cap, &st);
+        if (st != ATREE_OK) {
+            return st;
+        }
+    }
+    l->u.many[l->len++] = id;
+    return ATREE_OK;
+}
+
+/* Removes the id at `pos` (swap-remove). A heap list left with one id
+ * returns to the inline form, so a node whose ids come and go keeps no
+ * list behind. */
+static void sublist_remove_at(atree_t *t, struct atree__sublist *l, uint32_t pos)
+{
+    if (l->cap == 0) {
+        l->len = 0;
+        return;
+    }
+    l->len--;
+    if (pos != l->len) {
+        l->u.many[pos] = l->u.many[l->len];
+    }
+    if (l->len <= 1) {
+        atree_id_t keep = l->len == 1 ? l->u.many[0] : 0;
+        atree__free_array(&t->mem, l->u.many, l->cap, sizeof *l->u.many);
+        l->u.one = keep;
+        l->cap = 0;
+    }
 }
 
 static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
 {
     uint32_t slot;
-    bool fresh = false;
     atree_status_t st;
-    struct atree__node *n;
 
     slot = t->sub_slot.data[nid];
     if (slot == UINT32_MAX) {
-        struct atree__u64vec empty;
-        atree__u64vec_init(&empty);
+        struct atree__sublist empty;
+        empty.u.one = 0;
+        empty.len = 0;
+        empty.cap = 0;
         if (t->free_sublists.len > 0) {
             slot = t->free_sublists.data[--t->free_sublists.len];
             t->sublists.data[slot] = empty;
@@ -673,44 +748,40 @@ static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
             slot = t->sublists.len - 1;
         }
         t->sub_slot.data[nid] = slot;
-        fresh = true;
     }
-    st = atree__u64vec_push(&t->mem, &t->sublists.data[slot], id);
+    /* A fresh list takes its first id inline, so a failure here leaves a
+     * list that already held ids and nothing to undo. */
+    st = sublist_push(t, &t->sublists.data[slot], id);
     if (st != ATREE_OK) {
-        if (fresh) {
-            t->sub_slot.data[nid] = UINT32_MAX;
-            (void)atree__u32vec_push(&t->mem, &t->free_sublists, slot);
-        }
         return st;
     }
-    n = node_at(t, nid);
-    n->flags |= ATREE_NODE_HAS_SUBS;
+    node_at(t, nid)->flags |= ATREE_NODE_HAS_SUBS;
     return ATREE_OK;
 }
 
 static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
 {
     uint32_t slot;
-    struct atree__u64vec *list;
+    struct atree__sublist *list;
+    const atree_id_t *ids;
     uint32_t pos;
-    struct atree__node *n;
 
     slot = t->sub_slot.data[nid];
     if (slot == UINT32_MAX) {
         return false;
     }
     list = &t->sublists.data[slot];
-    pos = atree__u64vec_find(list, id);
-    if (pos == UINT32_MAX) {
+    ids = sublist_ids(list);
+    for (pos = 0; pos < list->len && ids[pos] != id; pos++) {
+    }
+    if (pos == list->len) {
         return false;
     }
-    atree__u64vec_swap_remove(list, pos);
-    n = node_at(t, nid);
+    sublist_remove_at(t, list, pos);
     if (list->len == 0) {
-        atree__u64vec_free(&t->mem, list);
         t->sub_slot.data[nid] = UINT32_MAX;
         (void)atree__u32vec_push(&t->mem, &t->free_sublists, slot);
-        n->flags &= (uint8_t)~ATREE_NODE_HAS_SUBS;
+        node_at(t, nid)->flags &= (uint8_t)~ATREE_NODE_HAS_SUBS;
     }
     return true;
 }
@@ -2062,7 +2133,8 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
     for (i = 0; i < t->nodes.len; i++) {
         const struct atree__node *n = &t->nodes.data[i];
         struct atree__probe probe;
-        const struct atree__u64vec *subs;
+        const atree_id_t *subs;
+        uint32_t nsubs_here;
         uint32_t level = 0;
         uint32_t anchors = 0;
         if (n->kind == ATREE_NODE_FREE) {
@@ -2076,19 +2148,16 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             FAIL("level out of range", i, n->level);
         }
         per_level.data[n->level]++;
-        subs = atree__node_sublist(t, i);
-        if (((n->flags & ATREE_NODE_HAS_SUBS) != 0) != (subs != NULL && subs->len > 0)) {
-            FAIL("HAS_SUBS flag disagrees with sublist", i, subs != NULL ? subs->len : 0);
+        subs = atree__node_subs(t, i, &nsubs_here);
+        if (((n->flags & ATREE_NODE_HAS_SUBS) != 0) != (nsubs_here > 0)) {
+            FAIL("HAS_SUBS flag disagrees with sublist", i, nsubs_here);
         }
-        if (subs != NULL) {
-            for (j = 0; j < subs->len; j++) {
-                if (!atree__u64map_get(&t->subs, subs->data[j], &val) || val != i) {
-                    FAIL("subscription not mapped back to node", i,
-                         (unsigned long long)subs->data[j]);
-                }
+        for (j = 0; j < nsubs_here; j++) {
+            if (!atree__u64map_get(&t->subs, subs[j], &val) || val != i) {
+                FAIL("subscription not mapped back to node", i, (unsigned long long)subs[j]);
             }
-            subs_on_nodes += subs->len;
         }
+        subs_on_nodes += nsubs_here;
         if (!in_use(n)) {
             FAIL("orphan node", i, 0);
         }
@@ -2257,12 +2326,15 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
                 FAIL("constant-true subscription missing from always list", key, 0);
             }
         } else if (val != ATREE_SUB_NEVER) {
-            const struct atree__u64vec *subs;
+            const atree_id_t *subs;
+            uint32_t nsubs_here;
             if (val >= t->nodes.len || t->nodes.data[val].kind == ATREE_NODE_FREE) {
                 FAIL("subscription maps to a free node", key, val);
             }
-            subs = atree__node_sublist(t, val);
-            if (subs == NULL || atree__u64vec_find(subs, key) == UINT32_MAX) {
+            subs = atree__node_subs(t, val, &nsubs_here);
+            for (j = 0; j < nsubs_here && subs[j] != key; j++) {
+            }
+            if (j == nsubs_here) {
                 FAIL("subscription missing from its node's list", key, val);
             }
         }

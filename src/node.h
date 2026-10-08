@@ -72,7 +72,19 @@ ATREE_STATIC_ASSERT(sizeof(struct atree__node) <= 64, node_fits_in_a_cache_line)
 
 ATREE_VEC_DEFINE(atree__nodevec, struct atree__node);
 ATREE_VEC_DEFINE(atree__predvec, struct atree__pred);
-ATREE_VEC_DEFINE(atree__sublistvec, struct atree__u64vec);
+/* Subscription ids attached to one node. Almost every node that carries
+ * ids carries exactly one, so the first id is stored inline and a heap
+ * list is allocated only for the second. `cap` is the tag: 0 means `u.one`
+ * is the storage (len <= 1); otherwise `u.many` holds `cap` slots. */
+struct atree__sublist {
+    union {
+        uint64_t one;
+        uint64_t *many;
+    } u;
+    uint32_t len;
+    uint32_t cap;
+};
+ATREE_VEC_DEFINE(atree__sublistvec, struct atree__sublist);
 
 /* Description of a node that may not exist yet, for identity lookups. */
 struct atree_expr;

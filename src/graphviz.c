@@ -60,19 +60,20 @@ static int capture_write(void *ctx, const char *data, size_t len)
 
 static void write_subs(struct atree__writer *w, const atree_t *t, atree__nid id)
 {
-    const struct atree__u64vec *subs = atree__node_sublist(t, id);
+    uint32_t nsubs;
+    const atree_id_t *subs = atree__node_subs(t, id, &nsubs);
     uint32_t i;
-    if (subs == NULL || subs->len == 0) {
+    if (nsubs == 0) {
         return;
     }
     atree__write_cstr(w, "\\nsubscriptions: ");
-    for (i = 0; i < subs->len && i < 8; i++) {
+    for (i = 0; i < nsubs && i < 8; i++) {
         if (i > 0) {
             atree__write_cstr(w, ", ");
         }
-        atree__write_u64(w, subs->data[i]);
+        atree__write_u64(w, subs[i]);
     }
-    if (subs->len > 8) {
+    if (nsubs > 8) {
         atree__write_cstr(w, ", ...");
     }
 }
