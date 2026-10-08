@@ -69,14 +69,14 @@ struct atree {
     struct atree__strtab strings;
 
     /* The DAG. */
-    struct atree__nodevec nodes;     /* slab; kind == ATREE_NODE_FREE for free slots */
+    struct atree__nodeslab nodes;    /* slab; kind == ATREE_NODE_FREE for free slots */
     struct atree__u32vec free_nodes; /* recycled slots                                */
-    struct atree__predvec preds;     /* predicate slab, referenced by leaves           */
-    struct atree__u32vec leaf_pos;   /* per predicate slot: position in `leaves`       */
+    struct atree__predslab preds;    /* predicate slab, referenced by leaves           */
+    struct atree__u32slab leaf_pos;  /* per predicate slot: position in `leaves`       */
     struct atree__u32vec free_preds;
     struct atree__idset identity;      /* paper's H_en                                   */
     struct atree__idset content;       /* inner nodes by flat content (identity.h)       */
-    struct atree__u64vec csum;         /* per node: sum of flat member keys (inner nodes) */
+    struct atree__u64slab csum;        /* per node: sum of flat member keys (inner nodes) */
     struct atree__u32vec leaves;       /* every leaf; phase 1 scans this when unindexed  */
     struct atree__u32vec level_counts; /* nodes per level; [0] unused                   */
     uint32_t max_level;
@@ -85,7 +85,7 @@ struct atree {
 
     /* Subscriptions. */
     struct atree__u64map subs;         /* atree_id_t -> node id / ATREE_SUB_*            */
-    struct atree__u32vec sub_slot;     /* per node id: index into sublists, or UINT32_MAX */
+    struct atree__u32slab sub_slot;    /* per node id: index into sublists, or UINT32_MAX */
     struct atree__sublistvec sublists; /* ids attached to a node                         */
     struct atree__u32vec free_sublists;
     struct atree__u64vec always; /* ids of constant-true subscriptions              */
@@ -96,7 +96,8 @@ struct atree {
     struct atree__arena *norm_arena; /* normalization arena, reused across inserts   */
     struct atree__u32vec worklist;
     struct atree__u32vec scratch; /* lookup verification: flat member sets      */
-    struct atree__u32vec mark; /* per node id: epoch stamp for set tests (reorganize/self-adjust) */
+    struct atree__u32slab
+        mark; /* per node id: epoch stamp for set tests (reorganize/self-adjust) */
     uint32_t mark_epoch;
 
     /* Cumulative statistics. */

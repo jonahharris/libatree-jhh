@@ -46,14 +46,14 @@ typedef uint64_t (*key_fn)(const struct atree *t, atree__nid id);
 
 static uint64_t identity_key(const struct atree *t, atree__nid id)
 {
-    return t->nodes.data[id].hash;
+    return atree__nodeslab_at(&t->nodes, id)->hash;
 }
 
 uint64_t atree__content_key(const struct atree *t, atree__nid id)
 {
-    const struct atree__node *n = &t->nodes.data[id];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, id);
     uint64_t tag = n->kind == ATREE_NODE_AND ? UINT64_C(0xa11d) : UINT64_C(0x0e0e);
-    return atree__hash_combine(atree__hash_u64(tag), t->csum.data[id]);
+    return atree__hash_combine(atree__hash_u64(tag), *atree__u64slab_at(&t->csum, id));
 }
 
 static uint32_t cap_for(uint32_t need)
@@ -99,15 +99,16 @@ static atree_status_t rehash(struct atree *t, struct atree__idset *s, key_fn key
 
 static bool matches(const struct atree *t, atree__nid id, const struct atree__probe *p)
 {
-    const struct atree__node *n = &t->nodes.data[id];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, id);
     if (n->hash != p->hash || n->kind != p->kind) {
         return false;
     }
     if (p->kind == ATREE_NODE_LEAF) {
         if (p->leaf != NULL) {
-            return atree__expr_leaf_equals(p->leaf, &t->preds.data[n->pred], &t->strings);
+            return atree__expr_leaf_equals(p->leaf, atree__predslab_at(&t->preds, n->pred),
+                                           &t->strings);
         }
-        return atree__pred_equal(&t->preds.data[n->pred], p->pred);
+        return atree__pred_equal(atree__predslab_at(&t->preds, n->pred), p->pred);
     }
     return n->children.len == p->nchildren &&
         (p->nchildren == 0 ||

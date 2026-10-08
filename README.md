@@ -262,7 +262,7 @@ per event while libatree probes per-attribute indexes. **Against the
 paper's own synthetic curves** (Figures 11–13 at 1M expressions with the
 same parameters and sharing: about 0.65 ms, 5.3 s construction, 300 MB)
 libatree constructs in 3.9 s (254 000 expressions/s, parsing timed
-separately), uses 411 MB allocated (1.37×) and matches in 2.3 ms p50 on
+separately), uses 374 MB allocated (1.25×; 634 MB peak RSS) and matches in 2.3 ms p50 on
 events that match 28 000 expressions each, a density the paper's figure
 cannot have had. On the paper's real-workload profile (`bench_synthetic
 --ads`: 1.39M expressions, 43 predicates each, every predicate used 69

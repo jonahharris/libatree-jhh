@@ -3,11 +3,12 @@
  * (leaf) or subexpression (AND/OR). The paper's r-nodes are nodes that carry
  * subscription ids (HAS_SUBS); a node may be both shared and subscribed.
  *
- * Nodes live in a slab indexed by atree__nid; ids are reused through a free
- * list, which is safe because a node is removed from every parent, from the
- * identity table and from the indexes before its slot is recycled. Any
- * pointer into the slab is invalidated by node allocation: code re-fetches
- * `&t->nodes.data[id]` after anything that may allocate a node.
+ * Nodes live in a segmented slab (slab.h) indexed by atree__nid; ids are
+ * reused through a free list, which is safe because a node is removed from
+ * every parent, from the identity table and from the indexes before its
+ * slot is recycled. Code treats any pointer into the slab as invalidated
+ * by node allocation and re-fetches `node_at(t, id)` after anything that
+ * may allocate a node (only the first segment can actually move).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -18,6 +19,7 @@
 
 #include "compiler.h"
 #include "predicate.h"
+#include "slab.h"
 #include "vec.h"
 
 typedef uint32_t atree__nid;
@@ -70,8 +72,8 @@ struct atree__node {
 };
 ATREE_STATIC_ASSERT(sizeof(struct atree__node) <= 64, node_fits_in_a_cache_line);
 
-ATREE_VEC_DEFINE(atree__nodevec, struct atree__node);
-ATREE_VEC_DEFINE(atree__predvec, struct atree__pred);
+ATREE_SLAB_DEFINE(atree__nodeslab, struct atree__node);
+ATREE_SLAB_DEFINE(atree__predslab, struct atree__pred);
 /* Subscription ids attached to one node. Almost every node that carries
  * ids carries exactly one, so the first id is stored inline and a heap
  * list is allocated only for the second. `cap` is the tag: 0 means `u.one`

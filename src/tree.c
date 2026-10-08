@@ -63,28 +63,28 @@ static void free_dag(atree_t *t)
 {
     uint32_t i;
     for (i = 0; i < t->nodes.len; i++) {
-        struct atree__node *n = &t->nodes.data[i];
+        struct atree__node *n = atree__nodeslab_at(&t->nodes, i);
         if (n->kind != ATREE_NODE_FREE) {
             children_free(t, &n->children);
             atree__u32vec_free(&t->mem, &n->parents);
         }
     }
-    atree__nodevec_free(&t->mem, &t->nodes);
+    atree__nodeslab_free(&t->mem, &t->nodes);
     atree__u32vec_free(&t->mem, &t->free_nodes);
     for (i = 0; i < t->preds.len; i++) {
-        atree__pred_free(&t->mem, &t->preds.data[i]); /* no-op for recycled slots */
+        atree__pred_free(&t->mem, atree__predslab_at(&t->preds, i)); /* no-op for recycled slots */
     }
-    atree__predvec_free(&t->mem, &t->preds);
-    atree__u32vec_free(&t->mem, &t->leaf_pos);
+    atree__predslab_free(&t->mem, &t->preds);
+    atree__u32slab_free(&t->mem, &t->leaf_pos);
     atree__u32vec_free(&t->mem, &t->free_preds);
     atree__idset_free(t);
     atree__cset_free(t);
-    atree__u64vec_free(&t->mem, &t->csum);
+    atree__u64slab_free(&t->mem, &t->csum);
     atree__index_free(t);
     atree__u32vec_free(&t->mem, &t->leaves);
     atree__u32vec_free(&t->mem, &t->level_counts);
     atree__u64map_free(&t->mem, &t->subs);
-    atree__u32vec_free(&t->mem, &t->sub_slot);
+    atree__u32slab_free(&t->mem, &t->sub_slot);
     for (i = 0; i < t->sublists.len; i++) {
         struct atree__sublist *l = &t->sublists.data[i];
         if (l->cap != 0) {
@@ -99,7 +99,7 @@ static void free_dag(atree_t *t)
     journalvec_free(&t->mem, &t->journal);
     atree__arena_free(t->norm_arena);
     t->norm_arena = NULL;
-    atree__u32vec_free(&t->mem, &t->mark);
+    atree__u32slab_free(&t->mem, &t->mark);
 }
 
 atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *attrs, size_t nattrs,
@@ -143,18 +143,18 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
         t->initial_nodes = ATREE_DEFAULT_INITIAL_NODES;
         t->max_expr_nodes = ATREE_DEFAULT_MAX_EXPR_NODES;
     }
-    atree__nodevec_init(&t->nodes);
+    atree__nodeslab_init(&t->nodes);
     atree__u32vec_init(&t->free_nodes);
-    atree__predvec_init(&t->preds);
-    atree__u32vec_init(&t->leaf_pos);
+    atree__predslab_init(&t->preds);
+    atree__u32slab_init(&t->leaf_pos);
     atree__u32vec_init(&t->free_preds);
     atree__idset_init(&t->identity);
     atree__idset_init(&t->content);
-    atree__u64vec_init(&t->csum);
+    atree__u64slab_init(&t->csum);
     atree__u32vec_init(&t->leaves);
     atree__u32vec_init(&t->level_counts);
     atree__u64map_init(&t->subs);
-    atree__u32vec_init(&t->sub_slot);
+    atree__u32slab_init(&t->sub_slot);
     atree__sublistvec_init(&t->sublists);
     atree__u32vec_init(&t->free_sublists);
     atree__u64vec_init(&t->always);
@@ -162,7 +162,7 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     atree__u32vec_init(&t->scratch);
     journalvec_init(&t->journal);
     t->norm_arena = NULL;
-    atree__u32vec_init(&t->mark);
+    atree__u32slab_init(&t->mark);
     t->mark_epoch = 0;
     memset(&t->index, 0, sizeof t->index);
 
@@ -179,7 +179,7 @@ atree_status_t atree_create(const atree_config_t *cfg, const atree_attr_def_t *a
     if (st == ATREE_OK) {
         uint32_t hint =
             t->initial_nodes > ATREE_MAX_NODES ? ATREE_MAX_NODES : (uint32_t)t->initial_nodes;
-        st = atree__nodevec_reserve(&t->mem, &t->nodes, hint);
+        st = atree__nodeslab_reserve(&t->mem, &t->nodes, hint);
     }
     if (st == ATREE_OK) {
         st = atree__u32vec_push(&t->mem, &t->level_counts, 0); /* level 0 unused */
@@ -248,7 +248,7 @@ atree_type_t atree_attr_type(const atree_t *t, atree_attr_id_t id)
 
 static struct atree__node *node_at(atree_t *t, atree__nid id)
 {
-    return &t->nodes.data[id];
+    return atree__nodeslab_at(&t->nodes, id);
 }
 
 static atree_status_t node_alloc(atree_t *t, atree__nid *out)
@@ -262,23 +262,24 @@ static atree_status_t node_alloc(atree_t *t, atree__nid *out)
     atree__u32vec_init(&n.parents);
     if (t->free_nodes.len > 0) {
         *out = t->free_nodes.data[--t->free_nodes.len];
-        t->nodes.data[*out] = n; /* sub_slot[*out] was reset to UINT32_MAX on detach */
+        *atree__nodeslab_at(&t->nodes, *out) =
+            n; /* sub_slot[*out] was reset to UINT32_MAX on detach */
         return ATREE_OK;
     }
     if (t->nodes.len >= ATREE_MAX_NODES) {
         return ATREE_ERR_LIMIT;
     }
     {
-        atree_status_t st = atree__nodevec_push(&t->mem, &t->nodes, n);
+        atree_status_t st = atree__nodeslab_push(&t->mem, &t->nodes, n);
         if (st != ATREE_OK) {
             return st;
         }
-        st = atree__u64vec_push(&t->mem, &t->csum, 0);
+        st = atree__u64slab_push(&t->mem, &t->csum, 0);
         if (st != ATREE_OK) {
             t->nodes.len--;
             return st;
         }
-        st = atree__u32vec_push(&t->mem, &t->sub_slot, UINT32_MAX);
+        st = atree__u32slab_push(&t->mem, &t->sub_slot, UINT32_MAX);
         if (st != ATREE_OK) {
             t->nodes.len--;
             t->csum.len--;
@@ -569,8 +570,8 @@ static uint32_t choose_anchor(const atree_t *t, const uint32_t *ids, uint32_t n)
     uint32_t best = 0;
     uint32_t i;
     for (i = 1; i < n; i++) {
-        uint32_t pb = t->nodes.data[ids[best]].parents.len;
-        uint32_t pi = t->nodes.data[ids[i]].parents.len;
+        uint32_t pb = atree__nodeslab_at(&t->nodes, ids[best])->parents.len;
+        uint32_t pi = atree__nodeslab_at(&t->nodes, ids[i])->parents.len;
         if (pi < pb || (pi == pb && ids[i] < ids[best])) {
             best = i;
         }
@@ -620,15 +621,15 @@ static atree_status_t pred_slot_alloc(atree_t *t, const struct atree__pred *p, u
 {
     if (t->free_preds.len > 0) {
         *out = t->free_preds.data[--t->free_preds.len];
-        t->preds.data[*out] = *p;
+        *atree__predslab_at(&t->preds, *out) = *p;
         return ATREE_OK;
     }
     {
-        atree_status_t st = atree__predvec_push(&t->mem, &t->preds, *p);
+        atree_status_t st = atree__predslab_push(&t->mem, &t->preds, *p);
         if (st != ATREE_OK) {
             return st;
         }
-        st = atree__u32vec_push(&t->mem, &t->leaf_pos, UINT32_MAX);
+        st = atree__u32slab_push(&t->mem, &t->leaf_pos, UINT32_MAX);
         if (st != ATREE_OK) {
             t->preds.len--;
             return st;
@@ -642,7 +643,7 @@ static atree_status_t pred_slot_alloc(atree_t *t, const struct atree__pred *p, u
  * UNDEFINED operand, so freeing the slab at destroy is a no-op for them). */
 static void pred_slot_release(atree_t *t, uint32_t slot)
 {
-    atree__pred_free(&t->mem, &t->preds.data[slot]);
+    atree__pred_free(&t->mem, atree__predslab_at(&t->preds, slot));
     (void)atree__u32vec_push(&t->mem, &t->free_preds, slot);
 }
 
@@ -655,7 +656,7 @@ static const atree_id_t *sublist_ids(const struct atree__sublist *l)
 
 const atree_id_t *atree__node_subs(const atree_t *t, atree__nid id, uint32_t *n)
 {
-    uint32_t slot = t->sub_slot.data[id];
+    uint32_t slot = *atree__u32slab_at(&t->sub_slot, id);
     const struct atree__sublist *l;
     if (slot == UINT32_MAX) {
         *n = 0;
@@ -731,7 +732,7 @@ static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
     uint32_t slot;
     atree_status_t st;
 
-    slot = t->sub_slot.data[nid];
+    slot = *atree__u32slab_at(&t->sub_slot, nid);
     if (slot == UINT32_MAX) {
         struct atree__sublist empty;
         empty.u.one = 0;
@@ -747,7 +748,7 @@ static atree_status_t sub_attach(atree_t *t, atree__nid nid, atree_id_t id)
             }
             slot = t->sublists.len - 1;
         }
-        t->sub_slot.data[nid] = slot;
+        *atree__u32slab_at(&t->sub_slot, nid) = slot;
     }
     /* A fresh list takes its first id inline, so a failure here leaves a
      * list that already held ids and nothing to undo. */
@@ -766,7 +767,7 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
     const atree_id_t *ids;
     uint32_t pos;
 
-    slot = t->sub_slot.data[nid];
+    slot = *atree__u32slab_at(&t->sub_slot, nid);
     if (slot == UINT32_MAX) {
         return false;
     }
@@ -779,7 +780,7 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
     }
     sublist_remove_at(t, list, pos);
     if (list->len == 0) {
-        t->sub_slot.data[nid] = UINT32_MAX;
+        *atree__u32slab_at(&t->sub_slot, nid) = UINT32_MAX;
         (void)atree__u32vec_push(&t->mem, &t->free_sublists, slot);
         node_at(t, nid)->flags &= (uint8_t)~ATREE_NODE_HAS_SUBS;
     }
@@ -792,15 +793,15 @@ static bool sub_detach(atree_t *t, atree__nid nid, atree_id_t id)
 static void leaves_remove(atree_t *t, atree__nid id)
 {
     struct atree__node *n = node_at(t, id);
-    uint32_t pos = t->leaf_pos.data[n->pred];
+    uint32_t pos = *atree__u32slab_at(&t->leaf_pos, n->pred);
     uint32_t last = t->leaves.len - 1;
     if (pos != last) {
         atree__nid moved = t->leaves.data[last];
         t->leaves.data[pos] = moved;
-        t->leaf_pos.data[node_at(t, moved)->pred] = pos;
+        *atree__u32slab_at(&t->leaf_pos, node_at(t, moved)->pred) = pos;
     }
     t->leaves.len--;
-    t->leaf_pos.data[n->pred] = UINT32_MAX;
+    *atree__u32slab_at(&t->leaf_pos, n->pred) = UINT32_MAX;
 }
 
 /* Frees `start` if nothing uses it, then every child left unused, and so
@@ -848,14 +849,14 @@ static atree_status_t marks_begin(atree_t *t)
 {
     uint32_t i;
     while (t->mark.len < t->nodes.len) {
-        atree_status_t st = atree__u32vec_push(&t->mem, &t->mark, 0);
+        atree_status_t st = atree__u32slab_push(&t->mem, &t->mark, 0);
         if (st != ATREE_OK) {
             return st;
         }
     }
     if (t->mark_epoch == UINT32_MAX) {
         for (i = 0; i < t->mark.len; i++) {
-            t->mark.data[i] = 0;
+            *atree__u32slab_at(&t->mark, i) = 0;
         }
         t->mark_epoch = 0;
     }
@@ -867,13 +868,13 @@ static void mark_set(atree_t *t, const uint32_t *ids, uint32_t n)
 {
     uint32_t i;
     for (i = 0; i < n; i++) {
-        t->mark.data[ids[i]] = t->mark_epoch;
+        *atree__u32slab_at(&t->mark, ids[i]) = t->mark_epoch;
     }
 }
 
 static bool marked(const atree_t *t, atree__nid id)
 {
-    return id < t->mark.len && t->mark.data[id] == t->mark_epoch;
+    return id < t->mark.len && *atree__u32slab_at(&t->mark, id) == t->mark_epoch;
 }
 
 /* ---- journal: everything an insert changes, for exact rollback ---------- */
@@ -900,9 +901,9 @@ static atree_status_t journal_created(atree_t *t, struct journalvec *j, atree__n
  * likely to be false wakes the node least often. */
 static int wake_rank(const atree_t *t, atree__nid id)
 {
-    const struct atree__node *n = &t->nodes.data[id];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, id);
     if (n->kind == ATREE_NODE_LEAF) {
-        return atree__pred_wake_rank(&t->preds.data[n->pred]);
+        return atree__pred_wake_rank(atree__predslab_at(&t->preds, n->pred));
     }
     return n->kind == ATREE_NODE_AND ? 2 : 3;
 }
@@ -912,8 +913,8 @@ static int wake_rank(const atree_t *t, atree__nid id)
 static bool better_access(const atree_t *t, atree__nid cand, int cand_rank, atree__nid best,
                           int best_rank)
 {
-    const struct atree__node *c = &t->nodes.data[cand];
-    const struct atree__node *b = &t->nodes.data[best];
+    const struct atree__node *c = atree__nodeslab_at(&t->nodes, cand);
+    const struct atree__node *b = atree__nodeslab_at(&t->nodes, best);
     if (cand_rank != best_rank) {
         return cand_rank < best_rank;
     }
@@ -943,7 +944,7 @@ static atree__nid choose_access_child(const atree_t *t, const uint32_t *ids, uin
 
 static void reset_access_child(atree_t *t, atree__nid id)
 {
-    const struct atree__node *n = &t->nodes.data[id];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, id);
     atree__nid c = ATREE_NID_NONE;
     if (n->kind == ATREE_NODE_AND && (t->flags & ATREE_FLAG_NO_PROPAGATION_ON_DEMAND) == 0) {
         c = choose_access_child(t, n->children.data, n->children.len);
@@ -964,7 +965,7 @@ static atree_status_t relevel(atree_t *t, atree__nid start, struct journalvec *j
         uint32_t level = 0;
         uint32_t i;
         for (i = 0; i < n->children.len; i++) {
-            uint32_t cl = t->nodes.data[n->children.data[i]].level;
+            uint32_t cl = atree__nodeslab_at(&t->nodes, n->children.data[i])->level;
             if (cl > level) {
                 level = cl;
             }
@@ -1040,7 +1041,7 @@ enum { LOOKUP_NONE = 0, LOOKUP_FOUND = 1, LOOKUP_ABSENT = 2 };
  * nodes by content key. */
 static uint64_t member_key(const atree_t *t, atree__nid id)
 {
-    const struct atree__node *n = &t->nodes.data[id];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, id);
     return n->kind == ATREE_NODE_LEAF ? n->hash : atree__content_key(t, id);
 }
 
@@ -1058,8 +1059,9 @@ static uint64_t flat_sum(const atree_t *t, uint8_t kind, const uint32_t *ids, ui
     uint64_t sum = 0;
     uint32_t i;
     for (i = 0; i < n; i++) {
-        const struct atree__node *c = &t->nodes.data[ids[i]];
-        sum += c->kind == kind ? t->csum.data[ids[i]] : member_mix(member_key(t, ids[i]));
+        const struct atree__node *c = atree__nodeslab_at(&t->nodes, ids[i]);
+        sum += c->kind == kind ? *atree__u64slab_at(&t->csum, ids[i])
+                               : member_mix(member_key(t, ids[i]));
     }
     return sum;
 }
@@ -1151,17 +1153,17 @@ static atree_status_t verify_inner(atree_t *t, atree_expr_t *e, atree__nid id, b
     atree_status_t st = ATREE_OK;
 
     *ok = false;
-    if (t->nodes.data[id].kind != kind) {
+    if (atree__nodeslab_at(&t->nodes, id)->kind != kind) {
         return ATREE_OK;
     }
     t->worklist.len = 0;
     st = atree__u32vec_push(&t->mem, &t->worklist, id);
     while (st == ATREE_OK && t->worklist.len > 0) {
         atree__nid cur = t->worklist.data[--t->worklist.len];
-        const struct atree__node *n = &t->nodes.data[cur];
+        const struct atree__node *n = atree__nodeslab_at(&t->nodes, cur);
         for (i = 0; st == ATREE_OK && i < n->children.len; i++) {
             atree__nid c = n->children.data[i];
-            if (t->nodes.data[c].kind == kind) {
+            if (atree__nodeslab_at(&t->nodes, c)->kind == kind) {
                 st = atree__u32vec_push(&t->mem, &t->worklist, c);
             } else {
                 st = atree__u32vec_push(&t->mem, &t->scratch, c);
@@ -1295,7 +1297,7 @@ static atree_status_t build_leaf(atree_t *t, atree_expr_t *e, struct journalvec 
         abort_new_node(t, id, slot, false, false, false, false, false, 0);
         return st;
     }
-    t->leaf_pos.data[slot] = t->leaves.len - 1;
+    *atree__u32slab_at(&t->leaf_pos, slot) = t->leaves.len - 1;
     if (indexed(t)) {
         st = atree__index_add(t, id);
         if (st != ATREE_OK) {
@@ -1352,10 +1354,10 @@ static atree_status_t reorganize(atree_t *t, uint8_t kind, uint32_t *ids, uint32
          * parents of every operand finds every cover exactly, without ever
          * walking the long parent lists of popular leaves. */
         for (i = 0; i < *n && examined < t->max_adjust_candidates; i++) {
-            const struct atree__node *u = &t->nodes.data[ids[i]];
+            const struct atree__node *u = atree__nodeslab_at(&t->nodes, ids[i]);
             for (j = 0; j < u->end_a && examined < t->max_adjust_candidates; j++) {
                 atree__nid pid = u->parents.data[j];
-                const struct atree__node *p = &t->nodes.data[pid];
+                const struct atree__node *p = atree__nodeslab_at(&t->nodes, pid);
                 uint32_t k;
                 bool sub = true;
                 examined++;
@@ -1381,7 +1383,7 @@ static atree_status_t reorganize(atree_t *t, uint8_t kind, uint32_t *ids, uint32
         /* ids <- (ids \ children(best)) + {best}; children(best) are sorted,
          * and at least two of them leave, so the set never grows. */
         {
-            const struct atree__node *b = &t->nodes.data[best];
+            const struct atree__node *b = atree__nodeslab_at(&t->nodes, best);
             m = 0;
             for (i = 0; i < *n; i++) {
                 if (!atree__bsearch_u32(b->children.data, b->children.len, ids[i])) {
@@ -1406,7 +1408,7 @@ static atree_status_t reorganize(atree_t *t, uint8_t kind, uint32_t *ids, uint32
 static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct journalvec *j)
 {
     struct atree__node *p = node_at(t, pid);
-    const struct atree__node *n = &t->nodes.data[nid];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, nid);
     struct atree__u32vec tmp;
     struct atree__u32vec nc;
     struct atree__probe probe;
@@ -1539,25 +1541,26 @@ static atree_status_t self_adjust(atree_t *t, atree__nid nid, struct journalvec 
     size_t examined = 0;
     uint32_t i;
     atree_status_t st = ATREE_OK;
-    const struct atree__node *n = &t->nodes.data[nid];
+    const struct atree__node *n = atree__nodeslab_at(&t->nodes, nid);
     atree__nid cid = n->children.data[0];
     uint32_t k = 0;
 
     for (i = 1; i < n->children.len; i++) {
         atree__nid c = n->children.data[i];
-        if (t->nodes.data[c].parents.len < t->nodes.data[cid].parents.len) {
+        if (atree__nodeslab_at(&t->nodes, c)->parents.len <
+            atree__nodeslab_at(&t->nodes, cid)->parents.len) {
             cid = c;
         }
     }
     /* A rewired parent drops out of this child's parent list (its link
      * moves to N), so iterate by index and re-read the list each time. */
-    while (st == ATREE_OK && k < t->nodes.data[cid].parents.len &&
+    while (st == ATREE_OK && k < atree__nodeslab_at(&t->nodes, cid)->parents.len &&
            examined < t->max_adjust_candidates) {
-        atree__nid pid = t->nodes.data[cid].parents.data[k];
-        const struct atree__node *p = &t->nodes.data[pid];
+        atree__nid pid = atree__nodeslab_at(&t->nodes, cid)->parents.data[k];
+        const struct atree__node *p = atree__nodeslab_at(&t->nodes, pid);
         bool super = true;
         uint32_t m;
-        n = &t->nodes.data[nid];
+        n = atree__nodeslab_at(&t->nodes, nid);
         examined++;
         if (pid == nid || p->kind != n->kind || p->children.len <= n->children.len) {
             k++;
@@ -1571,9 +1574,9 @@ static atree_status_t self_adjust(atree_t *t, atree__nid nid, struct journalvec 
             continue;
         }
         {
-            uint32_t before = t->nodes.data[cid].parents.len;
+            uint32_t before = atree__nodeslab_at(&t->nodes, cid)->parents.len;
             st = rewire(t, pid, nid, j);
-            if (t->nodes.data[cid].parents.len == before) {
+            if (atree__nodeslab_at(&t->nodes, cid)->parents.len == before) {
                 k++; /* skipped (duplicate) or failed: move on */
             }
         }
@@ -1698,7 +1701,7 @@ static atree_status_t build_inner(atree_t *t, atree_expr_t *e, struct journalvec
     }
     n->level = (uint16_t)(level + 1);
     reset_access_child(t, id);
-    t->csum.data[id] =
+    *atree__u64slab_at(&t->csum, id) =
         flat_sum(t, kind, node_at(t, id)->children.data, node_at(t, id)->children.len);
     st = atree__idset_insert(t, probe.hash, id);
     if (st != ATREE_OK) {
@@ -1828,7 +1831,7 @@ static void rollback(atree_t *t, struct journalvec *j)
         }
         case ATREE_J_CREATED:
         default: {
-            const struct atree__node *n = &t->nodes.data[e->node];
+            const struct atree__node *n = atree__nodeslab_at(&t->nodes, e->node);
             if (n->kind != ATREE_NODE_FREE && !in_use(n)) {
                 cascade(t, e->node);
             }
@@ -2131,15 +2134,16 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
         FAIL("per-node side arrays out of step with the node slab", t->sub_slot.len, t->nodes.len);
     }
     for (i = 0; i < t->nodes.len; i++) {
-        const struct atree__node *n = &t->nodes.data[i];
+        const struct atree__node *n = atree__nodeslab_at(&t->nodes, i);
         struct atree__probe probe;
         const atree_id_t *subs;
         uint32_t nsubs_here;
         uint32_t level = 0;
         uint32_t anchors = 0;
         if (n->kind == ATREE_NODE_FREE) {
-            if (t->sub_slot.data[i] != UINT32_MAX) {
-                FAIL("free node still owns a subscription list", i, t->sub_slot.data[i]);
+            if (*atree__u32slab_at(&t->sub_slot, i) != UINT32_MAX) {
+                FAIL("free node still owns a subscription list", i,
+                     *atree__u32slab_at(&t->sub_slot, i));
             }
             continue; /* a stranded slot (free-list push failed) is tolerated */
         }
@@ -2165,7 +2169,7 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             FAIL("parent region boundaries out of order", i, n->parents.len);
         }
         for (j = 0; j < n->parents.len; j++) {
-            const struct atree__node *p = &t->nodes.data[n->parents.data[j]];
+            const struct atree__node *p = atree__nodeslab_at(&t->nodes, n->parents.data[j]);
             uint32_t ci;
             if (p->kind == ATREE_NODE_FREE || p->kind == ATREE_NODE_LEAF) {
                 FAIL("parent link to a non-inner node", i, n->parents.data[j]);
@@ -2192,17 +2196,20 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (n->level != 1 || n->children.len != 0) {
                 FAIL("leaf with children or level != 1", i, n->level);
             }
-            if (n->pred >= t->preds.len || t->preds.data[n->pred].kind >= ATREE_PRED_KIND_COUNT) {
+            if (n->pred >= t->preds.len ||
+                atree__predslab_at(&t->preds, n->pred)->kind >= ATREE_PRED_KIND_COUNT) {
                 FAIL("leaf predicate slot invalid", i, n->pred);
             }
-            if (t->leaf_pos.data[n->pred] >= t->leaves.len ||
-                t->leaves.data[t->leaf_pos.data[n->pred]] != i) {
-                FAIL("leaf not at its slot in the leaf list", i, t->leaf_pos.data[n->pred]);
+            if (*atree__u32slab_at(&t->leaf_pos, n->pred) >= t->leaves.len ||
+                t->leaves.data[*atree__u32slab_at(&t->leaf_pos, n->pred)] != i) {
+                FAIL("leaf not at its slot in the leaf list", i,
+                     *atree__u32slab_at(&t->leaf_pos, n->pred));
             }
-            if (atree__pred_content_hash(&t->preds.data[n->pred], &t->strings) != n->hash) {
+            if (atree__pred_content_hash(atree__predslab_at(&t->preds, n->pred), &t->strings) !=
+                n->hash) {
                 FAIL("leaf hash stale", i, 0);
             }
-            probe.pred = &t->preds.data[n->pred];
+            probe.pred = atree__predslab_at(&t->preds, n->pred);
             probe.leaf = NULL;
             probe.children = NULL;
             probe.nchildren = 0;
@@ -2211,7 +2218,7 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
                 FAIL("inner node with fewer than two children", i, n->children.len);
             }
             for (j = 0; j < n->children.len; j++) {
-                const struct atree__node *c = &t->nodes.data[n->children.data[j]];
+                const struct atree__node *c = atree__nodeslab_at(&t->nodes, n->children.data[j]);
                 if (j > 0 && n->children.data[j] <= n->children.data[j - 1]) {
                     FAIL("children not sorted/unique", i, j);
                 }
@@ -2236,7 +2243,8 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
             if (anchors != 1) {
                 FAIL("inner node without exactly one anchor edge", i, anchors);
             }
-            if (t->csum.data[i] != flat_sum(t, n->kind, n->children.data, n->children.len)) {
+            if (*atree__u64slab_at(&t->csum, i) !=
+                flat_sum(t, n->kind, n->children.data, n->children.len)) {
                 FAIL("flat content sum stale", i, 0);
             }
             {
@@ -2328,7 +2336,8 @@ atree_status_t atree_validate(const atree_t *t, char *msg, size_t cap)
         } else if (val != ATREE_SUB_NEVER) {
             const atree_id_t *subs;
             uint32_t nsubs_here;
-            if (val >= t->nodes.len || t->nodes.data[val].kind == ATREE_NODE_FREE) {
+            if (val >= t->nodes.len ||
+                atree__nodeslab_at(&t->nodes, val)->kind == ATREE_NODE_FREE) {
                 FAIL("subscription maps to a free node", key, val);
             }
             subs = atree__node_subs(t, val, &nsubs_here);

@@ -98,7 +98,7 @@ atree_status_t atree_to_graphviz(const atree_t *t, atree_write_fn fn, void *ctx)
     for (level = 1; level <= t->max_level && !w.cancelled; level++) {
         bool any = false;
         for (i = 0; i < t->nodes.len; i++) {
-            const struct atree__node *n = &t->nodes.data[i];
+            const struct atree__node *n = atree__nodeslab_at(&t->nodes, i);
             if (n->kind == ATREE_NODE_FREE || n->level != level) {
                 continue;
             }
@@ -113,8 +113,8 @@ atree_status_t atree_to_graphviz(const atree_t *t, atree_write_fn fn, void *ctx)
                 cap.truncated = 0;
                 cap.buf[0] = '\0';
                 atree__writer_init(&pw, capture_write, &cap);
-                atree__pred_print(&t->preds.data[n->pred], &t->attrs, atree__strtab_resolver,
-                                  &t->strings, &pw);
+                atree__pred_print(atree__predslab_at(&t->preds, n->pred), &t->attrs,
+                                  atree__strtab_resolver, &t->strings, &pw);
                 write_label(&w, cap.buf, cap.len);
                 if (cap.truncated) {
                     atree__write_cstr(&w, "...");
@@ -137,7 +137,7 @@ atree_status_t atree_to_graphviz(const atree_t *t, atree_write_fn fn, void *ctx)
         if (any) {
             atree__write_cstr(&w, "  { rank = same;");
             for (i = 0; i < t->nodes.len; i++) {
-                const struct atree__node *n = &t->nodes.data[i];
+                const struct atree__node *n = atree__nodeslab_at(&t->nodes, i);
                 if (n->kind != ATREE_NODE_FREE && n->level == level) {
                     atree__write_cstr(&w, " n");
                     atree__write_u64(&w, i);
@@ -150,7 +150,7 @@ atree_status_t atree_to_graphviz(const atree_t *t, atree_write_fn fn, void *ctx)
 
     /* edges: parent -> child; the access child of an AND node in bold */
     for (i = 0; i < t->nodes.len && !w.cancelled; i++) {
-        const struct atree__node *n = &t->nodes.data[i];
+        const struct atree__node *n = atree__nodeslab_at(&t->nodes, i);
         if (n->kind != ATREE_NODE_AND && n->kind != ATREE_NODE_OR) {
             continue;
         }

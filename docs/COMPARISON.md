@@ -74,7 +74,7 @@ below are read off the curves at 1M expressions.
 | | Paper, A-Tree at 1M synthetic expressions (Figures 11a, 12a, 13a) | libatree `--paper` (1M expressions, 3000 events) |
 |---|---|---|
 | construction | about 5.3 s | 3.9 s (254 000 expressions/s; normalize + build, parsing timed separately) |
-| memory | about 300 MB | 411 MB allocated (1.87M nodes, 4.20M edges, 220 B per node); 764 MB peak RSS, which includes the benchmark's own predicate pool and the slab-doubling transient |
+| memory | about 300 MB | 374 MB allocated (1.87M nodes, 4.20M edges, 200 B per node); 634 MB peak RSS, which includes the benchmark's own predicate pool |
 | matching time | about 0.65 ms | p50 2.3 ms, p99 4.0 ms, with 27 500 matches, 23 600 nodes visited and 12 400 true predicates per event |
 | machine | 2.2 GHz Intel, 2018, gcc 7.4 -O3 | Apple M-series laptop, 2026, clang -O2 |
 
@@ -108,15 +108,16 @@ What the comparison says:
   child node changed nothing measurable on either profile (the children
   were just touched by the operand lookups). The waker regions cost about
   11% of insert and buy 11–15% of search; they stay.
-- **Memory is 1.37× the paper's at the same sharing.** The index has 856 000
+- **Memory is 1.25× the paper's at the same sharing.** The index has 856 000
   leaves for 646 000 distinct predicates: the 210 000 extra leaves are the
   negated variants that NOT push-down creates (the paper pushes NOT to the
   leaves too, §5.2.1, so it carries them as well). The 1.01M inner nodes
   match the paper's 4.39M subexpression instances at 4.33× sharing. The
-  rest is per-node cost, 220 B against an implied 180 B; the breakdown
-  below shows where it goes. Peak RSS exceeds the allocated bytes because
-  the node slab doubles from 134 MB to 268 MB at 2.1M nodes with both
-  copies resident, and the identity tables rehash the same way.
+  rest is per-node cost, 200 B against an implied 180 B; the breakdown
+  below shows where it goes. Peak RSS exceeds the allocated bytes by the
+  benchmark's own expression and event data and by the identity tables,
+  which rehash with both copies resident; the slabs no longer do (they
+  were 411 MB allocated and 764 MB peak before they were segmented).
 - **Matching is not comparable in density.** Each event here matches
   27 500 expressions (2.75% of the index) and 12 400 predicates are true;
   visiting 23 600 nodes in 0.65 ms on 2018 hardware would be 28 ns per
@@ -195,46 +196,50 @@ What the work on this profile showed:
 ## Where the memory goes
 
 A white-box breakdown of the 100k-expression tree built from the same-data
-set above (the 2–4 children, 30% reuse, no-pool generator) (342 109 nodes, 503 407 edges, 88.4 MB allocated through the
-allocator, 258 B per node, 884 B per expression), measured by walking the
-internal structures:
+set above (`--fanout 3 --share 30 --pred-share 0`: 198 377 nodes, 435 616
+edges, 44.1 MB allocated through the allocator, 222 B per node, 440 B per
+expression), measured by walking the internal structures:
 
 | Component | Bytes | Share | B/node |
 |---|---|---|---|
-| node slab (64 B × capacity) | 33.6 MB | 37.9% | 98.1 |
-| phase-1 index structures (per-attribute maps, rays, lists) | 7.4 MB | 8.4% | 21.6 |
-| predicate slab (32 B × capacity) | 8.4 MB | 9.5% | 24.5 |
-| parent arrays (of which 3.2 MB unused capacity) | 5.2 MB | 5.9% | 15.3 |
-| phase-1 buckets (one small vector per equality/membership key) | 4.7 MB | 5.3% | 13.7 |
-| subscription lists + `always` | 4.6 MB | 5.2% | 13.4 |
-| flat content sums (`csum`) | 4.2 MB | 4.7% | 12.3 |
-| children arrays (ids + positions) | 4.0 MB | 4.6% | 11.8 |
-| marks, worklists, free lists | 3.8 MB | 4.3% | 11.1 |
-| subscription map (id → node) | 3.4 MB | 3.9% | 10.0 |
-| identity table | 2.1 MB | 2.4% | 6.1 |
-| predicate list operands | 2.1 MB | 2.4% | 6.1 |
-| leaf positions + leaf list | 2.1 MB | 2.4% | 6.1 |
-| node → subscription list (then a hash map, now a 4 B per-node slot array) | 1.7 MB | 1.9% | 5.0 |
-| content table | 1.0 MB | 1.2% | 3.1 |
-| string table, attributes, rest | 0.1 MB | 0.2% | 0.4 |
+| node slab (64 B × segment capacity) | 13.6 MB | 30.9% | 68.7 |
+| phase-1 index structures (per-attribute maps, rays, lists) | 3.7 MB | 8.4% | 18.7 |
+| children arrays (ids + positions) | 3.5 MB | 7.9% | 17.6 |
+| parent arrays (of which 1.7 MB unused capacity) | 3.4 MB | 7.8% | 17.3 |
+| subscription map (id → node) | 3.4 MB | 7.7% | 17.2 |
+| predicate slab (32 B × segment capacity) | 3.1 MB | 7.1% | 15.9 |
+| identity table | 2.1 MB | 4.8% | 10.6 |
+| phase-1 buckets (one small vector per equality/membership key) | 2.1 MB | 4.7% | 10.5 |
+| marks, worklists, free lists | 1.9 MB | 4.4% | 9.7 |
+| subscription list headers + `always` | 1.7 MB | 3.9% | 8.7 |
+| flat content sums (`csum`) | 1.7 MB | 3.9% | 8.6 |
+| content table | 1.0 MB | 2.4% | 5.3 |
+| leaf positions + leaf list | 0.9 MB | 2.1% | 4.6 |
+| subscription slots (per node) | 0.9 MB | 1.9% | 4.3 |
+| predicate list operands | 0.7 MB | 1.7% | 3.7 |
+| string table, attributes | 0.2 MB | 0.3% | 0.8 |
 
-Three things stand out. The slabs (nodes, predicates, `csum`, leaf
-positions, marks) grow by doubling, so at this fill they carry about 35%
-slack: 98 B per node for a 64-byte node. Subscriptions cost about 97 B
-each across three structures (a map from id to node, a map from node to
-list, and a list that almost always holds one id). Small vectors have a
-minimum capacity of four, which is why parent arrays carry 3.2 MB of unused
-capacity for an average of 1.5 parents, and why a phase-1 bucket for a
-single predicate costs 32 B. None of these are structural; they are
-allocation policy, and together they are roughly a third of the total.
-Two cheap policy changes were tried and rejected: a minimum vector
-capacity of one instead of four cut live bytes by 6% at 1M expressions but
-cost 4–5% insert throughput and raised peak RSS at 100k, and growing large
-arrays by half instead of doubling cut live bytes by 19% at 1M but raised
-peak RSS by 8% through realloc churn. The slab slack wants a segmented slab
-that never moves (no realloc, no copy, at most one chunk of slack) and the
-subscription cost wants a single-id encoding; both are structural changes
-rather than tuning.
+Two structural costs were measured here and have since been removed. The
+slabs indexed by node or predicate id (nodes, predicates, `csum`, leaf
+positions, subscription slots, marks) used to double, carrying up to half
+their size in slack and holding both copies while they grew; they are
+segmented now (`src/slab.h`: fixed segments of 2^14 elements, at most one
+of them empty, nothing ever copied). At this fill the node slab costs
+68.7 B per 64-byte node instead of 84.6; the tree is 12.7% smaller
+(50.4 → 44.1 MB), the 1M-expression `--paper` tree 9% smaller (411 →
+374 MB) and its peak RSS 17% lower (764 → 634 MB) because the 134 → 268 MB
+copy is gone. A subscription used to cost a map entry, a 16-byte list
+header and a four-slot heap list that almost always held one id; the
+first id now lives in the header and a heap list exists only for nodes
+with several ids, which cut subscriptions from 64 to 51 B each here (map
+plus headers). What remains is allocation policy: small vectors have a
+minimum capacity of four, which is why parent arrays carry 1.7 MB of
+unused capacity for an average of 2.2 parents and a phase-1 bucket for a
+single predicate costs 32 B. Two cheap policy changes were tried and
+rejected: a minimum vector capacity of one instead of four cut live bytes
+by 6% at 1M expressions but cost 4–5% insert throughput and raised peak
+RSS at 100k, and growing large arrays by half instead of doubling cut
+live bytes by 19% at 1M but raised peak RSS by 8% through realloc churn.
 
 ## Other implementations
 

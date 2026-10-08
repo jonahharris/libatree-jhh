@@ -20,7 +20,7 @@ static struct atree__index_attr *ix_of(struct atree *t, atree_attr_id_t a)
 
 static const struct atree__pred *pred_of(const struct atree *t, atree__nid id)
 {
-    return &t->preds.data[t->nodes.data[id].pred];
+    return atree__predslab_at(&t->preds, atree__nodeslab_at(&t->nodes, id)->pred);
 }
 
 static atree_type_t type_of(const struct atree *t, atree_attr_id_t a)
@@ -541,7 +541,8 @@ static void check_list(struct check *c, const struct atree__u32vec *list, enum a
     uint32_t i;
     for (i = 0; i < list->len && !c->bad; i++) {
         atree__nid id = list->data[i];
-        if (id >= c->t->nodes.len || c->t->nodes.data[id].kind != ATREE_NODE_LEAF) {
+        if (id >= c->t->nodes.len ||
+            atree__nodeslab_at(&c->t->nodes, id)->kind != ATREE_NODE_LEAF) {
             check_fail(c, "non-leaf in index list", id, want);
             return;
         }
@@ -583,7 +584,8 @@ static void check_buckets(struct check *c, const struct atree__u64map *map, enum
             uint32_t k;
             bool has = false;
             uint64_t kk = 0;
-            if (id >= c->t->nodes.len || c->t->nodes.data[id].kind != ATREE_NODE_LEAF) {
+            if (id >= c->t->nodes.len ||
+                atree__nodeslab_at(&c->t->nodes, id)->kind != ATREE_NODE_LEAF) {
                 check_fail(c, "non-leaf in bucket", id, want);
                 return;
             }
@@ -614,7 +616,8 @@ static void check_rays(struct check *c, const struct atree__rayvec *v, enum atre
         atree__nid id = v->data[i].id;
         const struct atree__pred *p;
         struct atree__ray r;
-        if (id >= c->t->nodes.len || c->t->nodes.data[id].kind != ATREE_NODE_LEAF) {
+        if (id >= c->t->nodes.len ||
+            atree__nodeslab_at(&c->t->nodes, id)->kind != ATREE_NODE_LEAF) {
             check_fail(c, "non-leaf in ray array", id, want);
             return;
         }
@@ -675,7 +678,7 @@ atree_status_t atree__index_check(const struct atree *t, struct atree__mem *scra
         check_fail(&c, "null-attribute list has duplicates", t->index.null_attrs.len, 0);
     }
     for (i = 0; i < t->nodes.len && !c.bad; i++) {
-        const struct atree__node *n = &t->nodes.data[i];
+        const struct atree__node *n = atree__nodeslab_at(&t->nodes, i);
         uint32_t want;
         if (n->kind != ATREE_NODE_LEAF) {
             if (c.count[i] != 0) {
@@ -789,11 +792,14 @@ static atree_status_t seed_scan(const struct atree *t, const struct atree__u32ve
                                 const struct atree__value *v, atree__seed_fn seed, void *ctx,
                                 uint64_t *evaluated)
 {
+    void *const *nodes = t->nodes.segs;
+    void *const *preds = t->preds.segs;
     uint32_t i;
     for (i = 0; i < list->len; i++) {
         atree__nid id = list->data[i];
+        const struct atree__node *n = atree__nodeslab_from(nodes, id);
         (*evaluated)++;
-        if (atree__pred_eval(pred_of(t, id), v) == ATREE_TRUE) {
+        if (atree__pred_eval(atree__predslab_from(preds, n->pred), v) == ATREE_TRUE) {
             atree_status_t st = seed(ctx, id);
             if (st != ATREE_OK) {
                 return st;

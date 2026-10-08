@@ -255,6 +255,7 @@ static atree_status_t sort_matches(atree_report_t *r)
 static inline atree_status_t wake_range(atree_report_t *r, const atree_t *t,
                                         const struct atree__node *n, uint32_t from, uint32_t to)
 {
+    void *const *nodes = t->nodes.segs;
     uint32_t i;
     for (i = from; i < to; i++) {
         atree__nid pid = n->parents.data[i];
@@ -263,7 +264,7 @@ static inline atree_status_t wake_range(atree_report_t *r, const atree_t *t,
             continue;
         }
         bit_set(r->queued, pid);
-        st = atree__u32vec_push(&r->mem, &r->queues[t->nodes.data[pid].level], pid);
+        st = atree__u32vec_push(&r->mem, &r->queues[atree__nodeslab_from(nodes, pid)->level], pid);
         if (st != ATREE_OK) {
             /* reset_scratch clears only the ids in the queues: a bit left
              * set for an id that never got there would outlive this
@@ -333,8 +334,8 @@ static atree_status_t phase1_scan(atree_report_t *r, const atree_t *t, const atr
     uint32_t i;
     for (i = 0; i < t->leaves.len; i++) {
         atree__nid id = t->leaves.data[i];
-        const struct atree__node *n = &t->nodes.data[id];
-        const struct atree__pred *p = &t->preds.data[n->pred];
+        const struct atree__node *n = atree__nodeslab_at(&t->nodes, id);
+        const struct atree__pred *p = atree__predslab_at(&t->preds, n->pred);
         atree_tri_t v = atree__pred_eval(p, atree__event_value(ev, p->attr));
         r->stats.predicates_evaluated++;
         if (v == ATREE_TRUE) {
@@ -391,9 +392,10 @@ static atree_status_t search_locked(atree_report_t *r, const atree_t *t, const a
      * than the one being drained, so iterating by index is safe. */
     for (level = 1; st == ATREE_OK && level <= t->max_level; level++) {
         struct atree__u32vec *q = &r->queues[level];
+        void *const *nodes = t->nodes.segs;
         for (i = 0; st == ATREE_OK && i < q->len; i++) {
             atree__nid id = q->data[i];
-            const struct atree__node *n = &t->nodes.data[id];
+            const struct atree__node *n = atree__nodeslab_from(nodes, id);
             if (level > 1) {
                 r->stats.nodes_visited++;
                 if (n->kind == ATREE_NODE_AND) {

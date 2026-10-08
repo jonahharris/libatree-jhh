@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- The arrays indexed by node or predicate id (nodes, predicates, flat
+  content sums, subscription slots, leaf positions, marks) are segmented
+  slabs (`src/slab.h`): fixed segments of 2^14 elements behind a small
+  table, so growth allocates one segment and copies nothing, the slack is
+  at most one segment and full segments never move. The index is 9% smaller
+  at 1M synthetic expressions (411 → 374 MB allocated) and 13% smaller at
+  100k, and peak RSS at 1M drops 17% (764 → 634 MB) because the 134 → 268 MB
+  doubling copy is gone. Each node access is one more load from an
+  L1-resident table; measured interleaved against the previous build on a
+  loaded machine, insert was about 2% slower and search p50 about 3% slower
+  at 100k expressions, and both were within noise at 1M.
 - A node's first subscription id is stored inline in its list header; a
   heap list is allocated only for the second id and released again when
   the node drops back to one. Almost every subscribed node carries one id,
