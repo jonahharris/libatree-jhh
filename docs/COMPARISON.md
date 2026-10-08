@@ -1,35 +1,48 @@
 # libatree vs the paper and the Rust `a-tree` crate
 
-Measured on an Apple M-series laptop, single thread, release builds
-(libatree `-O2`, Rust `--release`), October 2026. Numbers vary by machine;
-the ratios are the point. Everything here is reproducible:
+## Method
+
+All libatree figures are from `make MODE=release` builds (`-O2 -std=c99`,
+Apple clang 16) on an Apple M2 Max laptop (12 cores, 64 GB, macOS 14.5),
+single-threaded, with nothing else running. Latencies are per-event
+wall-clock times from the scaled mach clock (41 ns resolution); p50 and p99
+are percentiles over the events of one run (2000 events at 100k
+expressions, 3000 at 1M). Numbers are from single runs, rounded; run-to-run
+differences under about 5% are noise and are never reported as changes.
+Construction time covers normalize and build with parsing timed separately,
+except in the same-data table, where `bench_file` times `atree_insert` on
+text for both implementations. "Allocated" is `bytes_allocated` from
+`atree_stats`, the live bytes requested from the allocator; "peak RSS" is
+the maximum resident set size that `/usr/bin/time -l` reports for the whole
+benchmark process, which includes the benchmark's own expression and event
+data. The paper's figures are read off its curves at 1M expressions (an
+error of perhaps 10%); its machine is the one its §6 names (2.2 GHz Intel,
+gcc 7.4 -O3). The Rust crate is 0.5.1 built with `--release`. Measured in
+October 2026 on the unreleased code after 0.1.0 (CHANGELOG.md). Everything
+is reproducible:
 
 ```sh
 make MODE=release bench
 # identical datasets in the dialect both implementations accept
 build-release/bench/bench_synthetic --rust-compatible --fanout 3 --share 30 --pred-share 0 --expressions 100000 --events 2000 --dump /tmp/s100k
-build/bench/bench_file /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events
+build-release/bench/bench_file /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events
 (cd bench/rust_compare && cargo run --release -- /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events)
 ```
 
 `bench/rust_compare` is optional tooling that builds the reference crate from
 `reference/a-tree`; it is not part of the library.
 
-All libatree figures below are from `make MODE=release` builds (-O2) run
-with nothing else on the machine; the paper used gcc 7.4 at -O3. Earlier
-revisions of this file carried numbers from benchmarks that had been linked
-against unoptimized objects, which understated libatree by 2-2.5×.
-
 ## Same data, both implementations
 
-ABE-Gen-style workload (1000 dimensions, cardinality 100, depth 3, 2–4
-children per node, 20 attribute-value pairs per event, Zipf α 0.6, 30%
-subexpression reuse, no predicate pool; the generator's current defaults
-reproduce the paper's sharing instead, and this dataset is now
-`--fanout 3 --share 30 --pred-share 0`), generated once and fed to both. Both return exactly the same number of
-matches on every dataset, which is a cross-implementation check of the
-semantics (the dialect avoids `all of`, whose meaning is reversed in the
-crate, and `xor`/`xnor`, which it lacks).
+A workload after the paper's generator: 1000 dimensions, cardinality 100,
+depth 3, 2–4 children per node, 20 attribute-value pairs per event, Zipf
+α 0.6, 30% subexpression reuse and no predicate pool (the flags in the
+block above; the generator's defaults reproduce the paper's sharing
+instead). Each dataset is generated once and fed to both implementations.
+Both return exactly the same number of matches on every dataset, which is a
+cross-implementation check of the semantics (the dialect avoids `all of`,
+whose meaning is reversed in the crate, and `xor`/`xnor`, which it lacks).
+Insert throughput here includes parsing for both.
 
 | | 20 000 expressions, 500 events | 100 000 expressions, 2 000 events |
 |---|---|---|
@@ -41,8 +54,13 @@ crate, and `xor`/`xnor`, which it lacks).
 | insert, Rust crate | 60 000 /s | 17 450 /s |
 | insert, libatree | 188 500 /s | 205 800 /s |
 | peak RSS, Rust crate | 98 MB | 461 MB |
-| peak RSS, libatree | 26 MB | 85 MB |
-| libatree index | 83 270 nodes, 101 974 edges, 1 123 B/expr | 342 109 nodes, 503 407 edges, 884 B/expr |
+| peak RSS, libatree | 20 MB | 80 MB |
+| libatree index | 83 270 nodes, 101 974 edges, 977 B/expr | 342 109 nodes, 503 407 edges, 706 B/expr |
+
+The timing rows were measured together, before the later search changes
+listed in CHANGELOG.md (radix sort, no OR re-evaluation, slot-array
+subscription lookup, phase-1 probing of defined attributes only), so they
+understate libatree; the size and RSS rows are from the current build.
 
 The search gap (60× at 20k, 97× at 100k) grows with the number of
 expressions because the crate's phase 1 evaluates every distinct predicate
@@ -93,16 +111,17 @@ What the comparison says:
   (taken on the previous workload, same parameters apart from sharing) leaf
   hashing was 11–12% while every leaf was hashed by three functions (the
   structural hash for normalization, the lookup probe, the content hash of
-  a new leaf); it is hashed once now, which bought the 9% between 4.4 s
+  a new leaf); it is hashed once now, which bought the 9% between 4.3 s
   and 3.9 s. Identity and content table probes and inserts are about 8% (a
   probe reads the slot, the node and the predicate), normalization with
   its sorts about 10%, the waker-region bookkeeping of the parent lists
   about 11%, the allocator about 5%; reorganize and self-adjust together
-  are the measured 14%.
+  are the measured 13%.
 - **Measured and declined.** Storing the high 32 bits of the key beside
   each node id in the identity and content tables, so a probe reads a node
   only on a tag match, made inserts 4–5% faster and the index 6% larger
-  (436 against 411 bytes per expression); memory is the larger gap, so the
+  (436 against 411 bytes per expression, measured before the slabs were
+  segmented); memory is the larger gap, so the
   tables keep their 4-byte slots. Verifying a content-table hit by looking
   the node's children up among the operands' ids instead of reading each
   child node changed nothing measurable on either profile (the children
@@ -113,8 +132,9 @@ What the comparison says:
   negated variants that NOT push-down creates (the paper pushes NOT to the
   leaves too, §5.2.1, so it carries them as well). The 1.01M inner nodes
   match the paper's 4.39M subexpression instances at 4.33× sharing. The
-  rest is per-node cost, 200 B against an implied 180 B; the breakdown
-  below shows where it goes. Peak RSS exceeds the allocated bytes by the
+  rest is per-node cost: 200 B per node here, where the paper's 300 MB over
+  the same 1.87M nodes would be 160 B; the breakdown below shows where it
+  goes. Peak RSS exceeds the allocated bytes by the
   benchmark's own expression and event data and by the identity tables,
   which rehash with both copies resident; the slabs no longer do (they
   were 411 MB allocated and 764 MB peak before they were segmented).
@@ -133,12 +153,6 @@ What the comparison says:
   unchanged. What remains is reading each woken parent (one cache miss per
   edge followed), the AND evaluations and phase 1 over the scan lists. On a
   sparse event (`--event-size 5`) at 100k expressions the p50 is 28 µs.
-
-The previous revision of this comparison used a generator with 2–4
-children per node, 30% reuse and no predicate pool (predicates shared 5.6
-times at 1M); that workload is still available as
-`--fanout 3 --share 30 --pred-share 0` and measured 5.7 ms, 4.4 s and
-724 MB allocated at 1M.
 
 ## Construction on the paper's real-workload profile
 
@@ -159,13 +173,13 @@ without parsing, as in the paper, whose expressions are already structured.
 | predicates per expression | 1–56 | 42.8 on average |
 | distinct predicates | 973 794 | 865 780 (1 109 393 leaves after NOT push-down) |
 | predicate sharing | 68.76× | 68.78× |
-| subexpression sharing | 28× / 11× / 7.5× by level | 23.7× overall |
+| subexpression sharing | 28× / 11× / 7.5× by level | 23.7× overall (the generator does not report it per level) |
 | construction | 2.9 s (1.4 s without reorganize and self-adjust) | 11.0 s (127 000 expressions/s); 9.7 s without reorganize and self-adjust |
 | memory | 205 MB | 488 MB allocated (2.03M nodes, 4.25M edges); 854 MB peak RSS |
 | matching | 1.6 ms | p50 21 ms with 323 000 matches per event |
 
 On the paper's own sharing profile libatree constructs about 3.8× more slowly
-than the paper and uses 2.4× its memory. Matching is not comparable: 22% of
+than the paper and uses 2.4× its memory. Matching is not comparable: 23% of
 the synthetic expressions match every event, which no ads workload does.
 What the work on this profile showed:
 
@@ -174,8 +188,8 @@ What the work on this profile showed:
   visiting its subexpressions. The first libatree build recursed bottom-up,
   hashing, looking up and interning every predicate instance and running
   reorganize for every inner-node instance although nearly all of them
-  already existed; on an earlier version of this profile that was 47× the
-  paper's time. Insert now hashes the normalized expression from its text,
+  already existed; on the earlier `--ads` preset (54 predicates per
+  expression) that was 47× the paper's time. Insert now hashes the normalized expression from its text,
   looks every subexpression up first (leaves in one probe without
   allocation, inner nodes through a content table keyed by flat structure,
   every hit verified) and reorganizes only the nodes that are new
@@ -184,21 +198,22 @@ What the work on this profile showed:
   arena.
 - **What remains is the per-leaf cost of a wide expression.** With 43
   predicates per expression the insert spends most of its 7.9 µs on the
-  leaves: in the profile of the previous version of this profile (54
+  leaves: in the insert profile of the earlier `--ads` preset (54
   predicates per expression) normalization was 23%, the leaf hashes and
   probes 17% (each probe is three dependent cache misses: slot, node,
   predicate) and sorting 15%; reorganize and self-adjust are the measured
-  13% here. The paper's 1 µs per expression over 48 predicates is only
+  12% here. The paper's 1 µs per expression over 48 predicates is only
   possible with integer predicate ids and arithmetic identities.
 - **Memory** is dominated by the 1.11M leaves (the paper's 974k predicates
   plus negated variants) and the per-node cost discussed above.
 
 ## Where the memory goes
 
-A white-box breakdown of the 100k-expression tree built from the same-data
-set above (`--fanout 3 --share 30 --pred-share 0`: 198 377 nodes, 435 616
-edges, 44.1 MB allocated through the allocator, 222 B per node, 440 B per
-expression), measured by walking the internal structures:
+A white-box breakdown of the 100k-expression tree of the README's
+Performance section (generator defaults, the paper's Table 3 parameters and
+sharing: 198 377 nodes, 435 616 edges, 44.1 MB allocated through the
+allocator, 222 B per node, 440 B per expression), measured by walking the
+internal structures:
 
 | Component | Bytes | Share | B/node |
 |---|---|---|---|
@@ -243,7 +258,8 @@ live bytes by 19% at 1M but raised peak RSS by 8% through realloc churn.
 
 ## Other implementations
 
-A JEPC-based Java engine (internal documentation shared by the user) layers
+A Java engine built on JEPC (a Java event-processing framework; its
+documentation is not part of this repository) layers
 the same shared DAG with zero suppression and propagation on demand over
 type-specialised predicate indexes (an interval index for `a < x and x < b`
 shapes, an R-tree for spatial predicates, a linear scan for everything
@@ -277,7 +293,7 @@ whereas libatree compares structure on every hash hit.
 | Failed insert | n/a | partial state possible | journaled, rolled back exactly |
 | Concurrency | n/a | `&self` search (Send + Sync) | const read paths, no tree writes, optional injected rwlock; verified with TSan |
 | Allocator | n/a | global | injected, exact sizes |
-| Three-valued semantics | yes | yes (`is empty` on undefined panics) | yes |
+| Three-valued semantics | yes | yes (`is empty` on undefined panics) | yes; an event NaN counts as undefined |
 | `all of` | n/a | event list ⊆ literal list | literal list ⊆ event list (be-tree) |
 | Language | `< <= = != >= > ∈ ∉ between and or not xor xnor` | no `xor`/`xnor`/`between` | full paper language plus `is [not] null/empty`, `one of`/`none of`/`all of`, `literal in list_attr` |
 | Diagnostics | n/a | parse errors without positions in the public type | status + byte offset + message |

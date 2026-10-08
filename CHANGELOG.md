@@ -6,24 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
-- The arrays indexed by node or predicate id (nodes, predicates, flat
-  content sums, subscription slots, leaf positions, marks) are segmented
-  slabs (`src/slab.h`): fixed segments of 2^14 elements behind a small
-  table, so growth allocates one segment and copies nothing, the slack is
-  at most one segment and full segments never move. The index is 9% smaller
-  at 1M synthetic expressions (411 → 374 MB allocated) and 13% smaller at
-  100k, and peak RSS at 1M drops 17% (764 → 634 MB) because the 134 → 268 MB
-  doubling copy is gone. Each node access is one more load from an
-  L1-resident table; measured interleaved against the previous build on a
-  loaded machine, insert was about 2% slower and search p50 about 3% slower
-  at 100k expressions, and both were within noise at 1M.
-- A node's first subscription id is stored inline in its list header; a
-  heap list is allocated only for the second id and released again when
-  the node drops back to one. Almost every subscribed node carries one id,
-  so this removes one allocation per insert and about 32 bytes per
-  subscription (2.5% of the index at 100k synthetic expressions).
-
 ### Added
 - `server/atreed`: a continuous-query server over the library that serves
   Redis, Postgres and HTTP clients on one port, built on pogocache's
@@ -33,8 +15,10 @@ All notable changes to this project are documented here. The format follows
   line format or as JSON, and matches delivered as Redis pub/sub messages
   (`SUBSCRIBE atree:<id>`), streamed Postgres rows (`WATCH <id>`),
   Postgres notifications (`LISTEN atree_<id>`) or Server-Sent Events
-  (`GET /subscribe/<id>`). One event-loop thread; `make -C server check`
-  runs raw-protocol tests. The shared line-format parser now rejects
+  (`GET /subscribe/<id>`); the catch-all channels (`atree:*`, `atree_all`,
+  `/subscribe/all`) carry `{"id":N,"event":...}` so the receiver knows
+  which query matched. One event-loop thread; `make -C server check` runs
+  raw-protocol tests. The shared line-format parser now rejects
   malformed numbers and booleans instead of reading them as zero/false.
 - `tools/atree_shell`: an interactive shell, server and client for playing
   with the library. Commands define attributes, register continuous
@@ -55,6 +39,21 @@ All notable changes to this project are documented here. The format follows
   as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
 
 ### Fixed
+- First run of the CI workflow on GitHub: the thread test's build-swap-retire
+  sequence destroyed the old tree after a fixed grace period that a loaded
+  runner outlasted (a reader was still searching it); it now waits until
+  every reader has fetched the new pointer. The tests and benchmarks define
+  `_POSIX_C_SOURCE` before the first system header so glibc exposes
+  `pthread_rwlock_*`, `nanosleep` and `clock_gettime` under `-std=c99`, link
+  `-lm` for `nan()`, and no longer compare function pointers through
+  `void *`; the shell client checks `write()` results; an expression built
+  inline in an expression test was never freed; the format job's `PATH`
+  override and the bench job's binary path were wrong.
+- `atreed` accepted `--exprs` before `--defs` on the command line and then
+  failed; files are loaded after all options are read.
+- The installed CMake package exported the shared library as
+  `atree::atree_shared` only; it is now `atree::atree` as the README says
+  (`atree::atree_static` for the static one).
 - The expression builders (`atree_expr_not`, `atree_expr_and`, ...) accepted
   any nesting, so a deep builder-made expression overflowed the stack in
   `atree_expr_free`, `atree_expr_print` or `atree_expr_eval`; only parse
@@ -85,9 +84,6 @@ All notable changes to this project are documented here. The format follows
   the next search on that report missed or fabricated matches. A failed
   push now clears the bits it had set. `test_alloc_failure` requires a
   retry after a failed search to return exactly the undisturbed count.
-  (The first version of this fix pushed before marking, which made the
-  compiler stop inlining the wake loop and cost 12% of the 1M search.)
-
 - The 32-bit CI job passed `CFLAGS=-m32` on the make command line, which
   replaces the Makefile's whole flag set, so that build ran without
   `-std=c99`, the warning set or `-Werror`. The Makefile now takes
@@ -107,6 +103,24 @@ All notable changes to this project are documented here. The format follows
   expressions over 1000 attributes: a 5-pair event 31.5 → 29.8 µs p50, a
   20-pair event 126 → 123 µs.
 ### Changed
+- The arrays indexed by node or predicate id (nodes, predicates, flat
+  content sums, subscription slots, leaf positions, marks, index list
+  positions) are segmented
+  slabs (`src/slab.h`): fixed segments of 2^14 elements behind a small
+  table, so growth allocates one segment and copies nothing, the slack is
+  at most one segment and full segments never move. The index is 9% smaller
+  at 1M synthetic expressions (411 → 374 MB allocated) and 13% smaller at
+  100k, and peak RSS at 1M drops 17% (764 → 634 MB) because the 134 → 268 MB
+  doubling copy is gone. Each node access is one more load from an
+  L1-resident table; measured interleaved against the previous build on a
+  loaded machine, insert was about 2% slower and search p50 about 3% slower
+  at 100k expressions, and both were within noise at 1M.
+- A node's first subscription id is stored inline in its list header; a
+  heap list is allocated only for the second id and released again when
+  the node drops back to one. Almost every subscribed node carries one id,
+  so this removes one allocation per insert and about 32 bytes per
+  subscription (2.5% of the index at 100k synthetic expressions).
+
 - Insert looks each normalized subexpression up before building it (paper
   Alg. 4 lines 1-4): leaves by a content hash that needs no string-table
   access, inner nodes through a new content table keyed by flat structure
@@ -151,9 +165,10 @@ All notable changes to this project are documented here. The format follows
   sharing ratio and parse throughput (parsing was never part of the timed
   insert), draws predicates from a Zipf-ranked pool with `--pred-pool N`,
   and gains the `--ads` preset that reproduces the sharing metrics of the
-  paper's real workload (§6.2); `docs/COMPARISON.md` records that
-  construction on that profile is 47× slower than the paper's figure and
-  why (bottom-up build instead of Alg. 4's lookup-first insert).
+  paper's real workload (§6.2); `docs/COMPARISON.md` recorded that
+  construction on that profile was then 47× slower than the paper's figure
+  and why (bottom-up build instead of Alg. 4's lookup-first insert); the
+  lookup-first entry above brought it to 3.8×.
 - Search no longer evaluates a woken OR node (under zero suppression only
   a true child wakes it), sorts the matched ids with an LSD radix sort
   instead of `qsort` (a scratch array in the report, grown with the match
@@ -181,7 +196,8 @@ All notable changes to this project are documented here. The format follows
   workload is `--fanout 3 --share 30 --pred-share 0`. `docs/COMPARISON.md`
   now compares against the paper's own synthetic curves (Figures 11–13)
   at matching parameters and sharing, and corrects the per-visited-node
-  figure (about 185 ns in a release build, not 0.36 µs).
+  figure (about 185 ns in a release build at the time, not 0.36 µs; the
+  search changes above brought it to 97 ns).
 - `bench_synthetic` gains `--dump`, `--rust-compatible` and `--cap`;
   `bench/rust_compare` compares the Rust `a-tree` crate on identical files;
   `docs/COMPARISON.md` records the results. Baseline regenerated for the

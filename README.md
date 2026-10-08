@@ -8,9 +8,12 @@ An A-Tree indexes a very large set of arbitrary Boolean expressions over typed
 attributes so that one event (an assignment of values to attributes) retrieves
 every expression it satisfies without evaluating each one. Typical uses:
 advertising exchanges, complex event processing, publish/subscribe filtering,
-alert routing.
+alert routing. An expression registered under a caller-chosen 64-bit id is a
+*subscription*; the shell and server in this repository call it a
+*continuous query*.
 
 ```c
+#include <stdio.h>
 #include <atree.h>
 
 atree_attr_def_t attrs[] = {
@@ -76,11 +79,12 @@ atree_destroy(tree);
 
 ```sh
 make                 # libatree.a and the shared library (MODE=release for -O2)
-make check           # tests + header conformance (C99/C11/C17/C++) + fuzz corpus replay
-make check-asan      # same under AddressSanitizer + UBSan
-make check-tsan      # thread tests under ThreadSanitizer
-make check-valgrind  # same under valgrind (Linux)
+make check           # tests, header conformance (C99/C11/C17/C++), fuzz corpus replay, shell smoke test
+make check-asan      # the tests under AddressSanitizer + UBSan
+make check-tsan      # the thread tests under ThreadSanitizer
+make check-valgrind  # the test binaries under valgrind (Linux; skipped when valgrind is absent)
 make bench           # benchmarks (see below)
+make tools           # tools/atree_shell
 make install PREFIX=/usr/local
 ```
 
@@ -92,7 +96,8 @@ cmake --install build --prefix /usr/local        # installs atreeConfig.cmake an
 ```
 
 Link with `-latree` (`pkg-config --cflags --libs atree`), or in CMake
-`find_package(atree)` and `target_link_libraries(app atree::atree)`.
+`find_package(atree)` and `target_link_libraries(app atree::atree)` for the
+shared library (`atree::atree_static` for the static one).
 
 ## Trying it out
 
@@ -103,9 +108,13 @@ answers with the matching ids, the time and the search counters:
 ```
 $ build/tools/atree_shell
 DEFINE price int
+OK price int
 DEFINE country string
+OK country string
 SUBSCRIBE 1 price > 10 and country in ["US", "CA"]
+OK subscribed 1
 SUBSCRIBE 2 not (price > 10) or country = 'DE'
+OK subscribed 2
 EVENT price=12;country="US"
 MATCH 1: 1
 TIME 1.2 us
@@ -115,11 +124,12 @@ OK
 
 `HELP` lists the commands (`PARSE`, `UNSUBSCRIBE`, `LOAD DEFS|EXPRS|EVENTS`
 for the `bench_file` text formats, `STATS`, `VALIDATE`, `DOT`). The same
-program is a server, `atree_shell --listen 7777` (or a Unix socket path),
-serving many clients from one tree: a client that subscribed an id receives
-`NOTIFY id event` whenever another client's event matches it, and its
-queries end with its connection. `atree_shell --connect localhost 7777`
-is the client. The shell is POSIX only; the library itself is not.
+program is a server, `atree_shell --listen 7777` (loopback only; or a Unix
+socket path), serving up to 64 clients from one tree: a client that
+subscribed an id receives `NOTIFY id event` whenever another client's event
+matches it, and its queries are deleted when it disconnects. `MATCH` lines
+print at most 100 ids. `atree_shell --connect localhost 7777` is the
+client. The shell is POSIX only; the library itself is not.
 
 ## A server
 
@@ -135,8 +145,10 @@ Redis pub/sub messages (`SUBSCRIBE atree:7`), streamed Postgres rows
 ## Expression language
 
 Compatible with the Rust `a-tree` crate's DSL, with `xor`, `xnor`,
-`between`, `true`/`false`, `value in list_attr` and the `&&`/`||`/`!`
-spellings added. Keywords are case-insensitive; attribute names are not.
+`between`, `true`/`false`, `value in list_attr` and the `&&`/`||`/`!`/`==`/`!=`
+spellings added. One difference in meaning: `all of` here is "the event's
+list contains every literal" (be-tree semantics); the crate reverses the
+inclusion. Keywords are case-insensitive; attribute names are not.
 
 | Form | Attribute types |
 |---|---|
@@ -152,8 +164,15 @@ spellings added. Keywords are case-insensitive; attribute names are not.
 | `true`, `false` | constants |
 
 Connectives, tightest first: `not`/`!`, `and`/`&&`, `xor`/`xnor`, `or`/`||`
-(as in C). Strings use single or double quotes with backslash escapes; lists
-use `[]` or `()`. Parse errors carry a byte offset and a message:
+(as in C). Lexical rules: an attribute name is `[A-Za-z_][A-Za-z0-9_-]*`
+(so `price-1` is a name, not a subtraction) and may not be one of the
+keywords `and or not xor xnor in of one none all is null empty true false
+between`; `atree_create` rejects such names. Integer literals are 64-bit
+signed; a literal with a fraction or exponent (`1.5`, `1e3`) is a float and
+must be finite; `12abc` is an error. Strings use single or double quotes
+with the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\'` and `\"` (any other
+`\x` is `x`); lists use `[]` or `()` and hold integers or strings, never
+floats. Parse errors carry a byte offset and a message:
 
 ```c
 atree_expr_t *e; atree_error_t err;
@@ -164,16 +183,22 @@ if (atree_expr_parse(tree, "country in ['CA', 'US'] and price between 1 and 2.5"
 
 Expressions can also be built programmatically (`atree_expr_var`,
 `atree_expr_cmp_int`, `atree_expr_in_strings`, `atree_expr_and`, ...) and
-rendered back to text with `atree_expr_print`.
+rendered back to text with `atree_expr_print`. Connectives take ownership of
+their children and free everything on failure, so a builder chain needs one
+NULL check at the end. A connective that would nest deeper than `max_depth`
+yields NULL. `atree_insert_expr` copies what it needs; the caller frees the
+expression with `atree_expr_free`.
 
 ## Semantics
 
 A predicate on an attribute the event does not define is **undefined**
-(paper §3.2); `is null` is the only predicate true in that case. Connectives
-follow Kleene three-valued logic (Table 2 of the paper), and an expression
-**matches only when it evaluates to true**. So `not (x = 5)` does not match an
-event without `x`. `atree_expr_eval` is the reference three-valued evaluator
-the tree is tested against.
+(paper §3.2); `is null` is the only predicate true in that case, and the
+negated forms are undefined too: `x not in [1, 2]`, `x <> 5`, `tags none of
+['a']`, `tags is not empty` and `not (x = 5)` all fail to match an event
+without `x`. Connectives follow Kleene three-valued logic (Table 2 of the
+paper), and an expression **matches only when it evaluates to true**.
+`atree_expr_eval` is the reference three-valued evaluator the tree is
+tested against.
 
 Details that matter in practice:
 
@@ -188,6 +213,71 @@ Details that matter in practice:
 - Inserting the same expression under several ids attaches all ids to one
   node; inserting an id that exists fails with `ATREE_ERR_DUPLICATE_ID`.
 
+## API overview
+
+Everything is in `include/atree.h`, which documents each function. The
+objects are:
+
+- **Tree** (`atree_t`): `atree_create` over a fixed attribute list, with an
+  optional `atree_config_t`; `atree_destroy`. Attribute lookup by name or id
+  (`atree_attr_lookup`, `atree_attr_name`, `atree_attr_type`).
+- **Subscriptions**: `atree_insert` (DSL text) or `atree_insert_expr` (a
+  built expression) under an `atree_id_t`; `atree_delete`; `atree_contains`;
+  `atree_count`. Several ids may share one expression; an id that exists
+  fails with `ATREE_ERR_DUPLICATE_ID`.
+- **Events** (`atree_event_t`): created on a tree, reusable; every attribute
+  starts undefined; `atree_event_set_*` by name, or `atree_event_set_*_id`
+  by attribute id for the hot path; `atree_event_set_undefined` and
+  `atree_event_clear`. Strings are resolved by lookup against the tree's
+  interned literals; a string the tree has never seen equals no literal.
+- **Reports** (`atree_report_t`): one per matching thread, reusable;
+  `atree_search` fills it and `atree_report_matches` returns the matched ids
+  sorted ascending, valid until the next search or destroy;
+  `atree_report_stats` gives the work counters. `atree_search_cb` delivers
+  ids to a callback (unspecified order; a nonzero return stops early),
+  `atree_exists` answers yes/no, and `atree_search_ids` filters by a sorted
+  allow list.
+- **Expressions** (`atree_expr_t`): `atree_expr_parse`, the builders,
+  `atree_expr_print`, `atree_expr_eval` and `atree_expr_free`.
+- **Introspection**: `atree_stats`, `atree_validate`, `atree_to_graphviz`.
+
+Operation costs: an insert normalizes the expression, looks every
+subexpression up (one hash probe each) and builds only what is new; a
+delete is a cascade over the nodes the id used alone, with O(1)
+swap-removes; a search costs phase 1, proportional to the leaves the event
+satisfies plus the negated leaves on the attributes it defines, and phase 2,
+proportional to the nodes reached from true leaves. Nothing in a search is
+proportional to the size of the index, and resetting the report costs the
+nodes it touched.
+
+## Configuration, errors and limits
+
+`atree_config_t` (zero-initialized by `atree_config_init`; every zero means
+the default): `allocator`, `lock`, `flags` (the `ATREE_FLAG_NO_*` switches,
+which never change results), `max_depth` (nesting of connectives a parser
+or builder accepts, default 64), `initial_nodes` (node capacity to reserve,
+default 1024), `max_adjust_candidates` (bound on the reorganize and
+self-adjust scans, default 4096; only sharing can suffer) and
+`max_expr_nodes` (nodes a normalized expression may have, default 8192; an
+XOR chain doubles per level, so this, not the depth, bounds the cost of one
+expression).
+
+Every fallible call returns an `atree_status_t` (`ATREE_OK` is 0;
+`atree_strerror` names the rest): `NOMEM`, `INVALID_ARG`, `SYNTAX`,
+`UNKNOWN_ATTR`, `TYPE_MISMATCH`, `DUPLICATE_ATTR`, `DUPLICATE_ID`,
+`NOT_FOUND`, `TOO_DEEP`, `LIMIT`, `INVALID_LITERAL`, `CORRUPT`, `CANCELLED`.
+`atree_insert`, `atree_insert_expr` and `atree_expr_parse` also fill an
+optional `atree_error_t` with the status, the byte offset and length of the
+offending token (or `SIZE_MAX`) and a message of at most
+`ATREE_ERROR_MESSAGE_MAX` bytes. On any failure of an insert the tree is
+exactly as before; the only residue is in the string table, where literals
+interned before the failure stay interned. The library never aborts, exits
+or prints.
+
+Limits: ids are any `uint64_t`; node ids are 32-bit, so a tree holds
+under 2^32 nodes; a list literal or event list holds under 2^32 elements;
+levels are 16-bit. Each limit fails the insert with `ATREE_ERR_LIMIT`.
+
 ## Thread safety
 
 Functions taking `const atree_t *` are read paths and never write to tree
@@ -197,16 +287,22 @@ number of them may run concurrently on one tree. `atree_insert*`,
 `atree_delete` and `atree_destroy` need exclusion from everything else, which
 can come from:
 
-1. an `atree_lock_t` in the configuration: the library then takes it for the
-   duration of every call (`extras/atree_lock_pthread.h` and
+1. an `atree_lock_t` in the configuration: the library then takes it exactly
+   once per call, `rdlock` for read paths (including `atree_expr_eval`,
+   which resolves string literals through the tree) and `wrlock` for
+   `atree_insert*` and `atree_delete`; callbacks run with the lock held and
+   must not call back into the tree, and `atree_destroy` is the caller's
+   to serialize (`extras/atree_lock_pthread.h` and
    `extras/atree_lock_win32.h` are ready-made adapters);
 2. your own synchronization around calls;
-3. build-swap-retire: fill a new tree, publish its pointer, let in-flight
-   searches drain, destroy the old one.
+3. build-swap-retire: fill a new tree, publish its pointer, wait until every
+   reader has fetched the new pointer, destroy the old one (the thread test
+   does exactly this with a per-reader generation counter).
 
 Use one `atree_event_t` and one `atree_report_t` per matching thread; both
-are reusable indefinitely. A custom allocator must be thread-safe if the
-library is used from several threads.
+are bound to the tree they were created on and are reusable indefinitely. A
+custom allocator must be thread-safe if the library is used from several
+threads.
 
 ## Allocator
 
@@ -246,13 +342,13 @@ expressions and are correspondingly faster.
 All timings here and in `docs/COMPARISON.md` are from `make MODE=release`
 builds (-O2) with nothing else running; the paper's numbers are gcc -O3.
 
-Index size for the 100 000 expressions: 198 377 nodes, 435 624 edges, about
-500 bytes per expression (reorganize and self-adjust removed about 109 000
-edges). Inserts run at about 380 000 expressions/s with all optimizations
-on and 414 000/s with reorganize and self-adjust disabled; an insert looks each
-subexpression up before building it, so a repeated subexpression costs one
-probe, and the candidate search for new nodes uses anchor lists. Deletes
-exceed 1 500 000/s.
+Index size for the 100 000 expressions: 198 377 nodes, 435 616 edges, about
+440 bytes per expression (reorganize and self-adjust removed about 109 000
+edges). Inserting those 100 000 expressions runs at about 380 000
+expressions/s with all optimizations on and 414 000/s with reorganize and
+self-adjust disabled, parsing excluded; an insert looks each subexpression
+up before building it, so a repeated subexpression costs one probe. Deletes
+exceed 1 000 000/s.
 
 **Against the Rust `a-tree` crate**, on identical datasets in the dialect
 both accept, libatree returns exactly the same matches and searches 60×
@@ -263,7 +359,7 @@ paper's own synthetic curves** (Figures 11–13 at 1M expressions with the
 same parameters and sharing: about 0.65 ms, 5.3 s construction, 300 MB)
 libatree constructs in 3.9 s (254 000 expressions/s, parsing timed
 separately), uses 374 MB allocated (1.25×; 634 MB peak RSS) and matches in 2.3 ms p50 on
-events that match 28 000 expressions each, a density the paper's figure
+events that match 27 500 expressions each, a density the paper's figure
 cannot have had. On the paper's real-workload profile (`bench_synthetic
 --ads`: 1.39M expressions, 43 predicates each, every predicate used 69
 times) construction takes 11.0 s against the paper's 2.9 s, because the
@@ -284,7 +380,8 @@ allocator calls.
 - `atree_stats`: nodes, leaves, edges, max level, indexed vs scanned leaves,
   reorganize/self-adjust counters, interned strings, live and peak bytes.
 - `atree_report_stats`: per search, predicates evaluated/matched, inner nodes
-  visited, AND nodes woken and how many were true, matches.
+  visited, AND nodes woken and how many were true, OR nodes visited,
+  matches.
 - `atree_validate`: full structural self-check, for tests and diagnostics.
 - `atree_to_graphviz`: DOT export drawn like the paper's figures (leaves at
   the bottom, one rank per level, access-child edges in bold).
@@ -301,6 +398,14 @@ allocator calls.
   networking core under `server/deps/`.
 - `PLAN.md` — the design and plan the library was built from; `CLAUDE.md` —
   the coding rules it is held to.
+
+## Versioning
+
+`ATREE_VERSION_*` and `atree_version()` report the library version; the
+project follows Semantic Versioning and `CHANGELOG.md` follows Keep a
+Changelog. The current release is 0.1.0 and the API and ABI may still change
+before 1.0 (the unreleased changes already add a field to `atree_config_t`).
+The shared library's SONAME is the major version.
 
 ## License
 
