@@ -146,12 +146,15 @@ check-tsan:
 	    TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1" $(BUILD)-tsan/tests/test_threads; \
 	else echo "check-tsan: no tests/test_threads.c yet"; fi
 
+# --fair-sched keeps valgrind's thread scheduler from starving the writer
+# in test_threads; the per-test timeout turns a hang into a named failure.
 check-valgrind: $(TEST_BINS)
 	@if command -v valgrind >/dev/null 2>&1; then \
+	    if command -v timeout >/dev/null 2>&1; then limit="timeout 900"; else limit=""; fi; \
 	    for t in $(TEST_BINS); do \
 	        echo "VALGRIND $$t"; \
-	        valgrind --quiet --error-exitcode=1 --leak-check=full --show-leak-kinds=all \
-	            --errors-for-leak-kinds=all $$t || exit 1; \
+	        $$limit valgrind --quiet --error-exitcode=1 --leak-check=full --show-leak-kinds=all \
+	            --errors-for-leak-kinds=all --fair-sched=yes $$t || { echo "VALGRIND FAILED: $$t"; exit 1; }; \
 	    done; echo "VALGRIND CLEAN"; \
 	else echo "check-valgrind: valgrind not installed on this machine (CI runs it)"; fi
 
