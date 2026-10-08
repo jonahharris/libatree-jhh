@@ -11,6 +11,12 @@
  *
  * SPDX-License-Identifier: MIT
  */
+/* pthread_rwlock_* and nanosleep are POSIX; glibc hides them under a strict
+ * -std=c99 unless the feature macro precedes the first system header. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "test.h"
 
 #if defined(_WIN32)
@@ -290,9 +296,11 @@ struct published {
 
 struct swap_reader {
     struct published *pub;
+    int seen_generation; /* generation of the pointer last fetched; under pub->mu */
     long searches;
     long errors;
 };
+#define GENERATION_DONE (1 << 30) /* a reader that exited blocks no retire */
 
 static void *reader_follow(void *arg)
 {
@@ -306,6 +314,7 @@ static void *reader_follow(void *arg)
         test_mutex_lock(&r->pub->mu);
         cur = r->pub->current;
         stop = r->pub->stop;
+        r->seen_generation = r->pub->generation;
         test_mutex_unlock(&r->pub->mu);
         if (stop) {
             break;
@@ -329,6 +338,9 @@ static void *reader_follow(void *arg)
         }
         r->searches++;
     }
+    test_mutex_lock(&r->pub->mu);
+    r->seen_generation = GENERATION_DONE;
+    test_mutex_unlock(&r->pub->mu);
     atree_report_destroy(rep);
     atree_event_destroy(ev);
     return NULL;
@@ -351,6 +363,7 @@ TEST(build_swap_retire)
     ASSERT_OK(atree_insert(pub.current, 1, "b0", SIZE_MAX, NULL));
     for (i = 0; i < NTHREADS; i++) {
         readers[i].pub = &pub;
+        readers[i].seen_generation = 0;
         readers[i].searches = 0;
         readers[i].errors = 0;
         ASSERT_EQ_I64(test_thread_start(&threads[i], reader_follow, &readers[i]), 0);
@@ -365,15 +378,26 @@ TEST(build_swap_retire)
         pub.current = fresh;
         pub.generation = gen_no;
         test_mutex_unlock(&pub.mu);
-        /* Retire: in production one would wait for in-flight searches with an
-         * epoch or RCU scheme; here readers hold the mutex only to read the
-         * pointer, so a short grace period suffices for the test's purpose. */
-        test_sleep_ms(20);
-        /* Readers that fetched `old` before the swap may still be searching it;
-         * the mutex handoff above does not wait for them, so this retire is
-         * only safe because every reader re-reads the pointer per search and
-         * the search itself is short. A real deployment must wait. */
-        test_sleep_ms(20);
+        /* Retire only once every reader has fetched the new pointer. A
+         * reader records the generation it saw at each fetch, and it fetches
+         * only between searches, so when all of them report this generation
+         * none can still be inside a search on `old`. This is the
+         * quiescence wait a real deployment needs too (an epoch or RCU
+         * scheme); a fixed grace period is not safe on a loaded machine. */
+        for (;;) {
+            int all_moved = 1;
+            test_mutex_lock(&pub.mu);
+            for (i = 0; i < NTHREADS; i++) {
+                if (readers[i].seen_generation < gen_no) {
+                    all_moved = 0;
+                }
+            }
+            test_mutex_unlock(&pub.mu);
+            if (all_moved) {
+                break;
+            }
+            test_sleep_ms(1);
+        }
         atree_destroy(old);
     }
     test_mutex_lock(&pub.mu);

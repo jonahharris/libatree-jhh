@@ -104,7 +104,7 @@ $(SHLIB_LINK): $(SHLIB)
 
 # ---- tests ------------------------------------------------------------------
 
-TEST_LDFLAGS := -pthread
+TEST_LDFLAGS := -pthread -lm
 
 $(BUILD)/tests/%: tests/%.c $(STLIB)
 	@mkdir -p $(dir $@)

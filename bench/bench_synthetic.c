@@ -40,6 +40,12 @@
  *
  * SPDX-License-Identifier: MIT
  */
+/* clock_gettime is POSIX; glibc hides it under a strict -std=c99 unless the
+ * feature macro precedes the first system header. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

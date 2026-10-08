@@ -9,6 +9,10 @@
  *   ... atree_create(&cfg, ...) ...
  *   atree_pthread_lock_destroy(&lk);   // after atree_destroy
  *
+ * pthread_rwlock_* is POSIX.1-2001: under a strict -std=c99 define
+ * _POSIX_C_SOURCE (200112L or later) before the first system header, or
+ * build with -D_POSIX_C_SOURCE=200809L.
+ *
  * SPDX-License-Identifier: MIT
  */
 #ifndef ATREE_LOCK_PTHREAD_H

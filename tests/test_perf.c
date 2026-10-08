@@ -297,6 +297,7 @@ TEST(churn_is_bounded)
     char buf[64];
     int i;
     ASSERT_OK(atree_create(NULL, DEFS, NDEFS, &t));
+    memset(&early, 0, sizeof early); /* taken at i == 2000 below */
     for (i = 0; i < 200; i++) {
         snprintf(buf, sizeof buf, "x = %d and q", i);
         ASSERT_FALSE(ins(t, (atree_id_t)(i + 1), buf));
