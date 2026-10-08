@@ -651,6 +651,7 @@ static void pred_slot_release(atree_t *t, uint32_t slot)
 
 static const atree_id_t *sublist_ids(const struct atree__sublist *l)
 {
+    assert(l->cap != 0 || l->len <= 1); /* inline storage holds one id */
     return l->cap == 0 ? &l->u.one : l->u.many;
 }
 
@@ -1420,7 +1421,9 @@ static atree_status_t rewire(atree_t *t, atree__nid pid, atree__nid nid, struct 
     uint32_t idx_n;
     atree_status_t st;
 
-    /* new child id set */
+    /* new child id set; P's children strictly contain N's (self-adjust's
+     * precondition), which keeps the reserve size positive */
+    assert(p->children.len > n->children.len);
     atree__u32vec_init(&tmp);
     st = atree__u32vec_reserve(&t->mem, &tmp, p->children.len - n->children.len + 1);
     if (st != ATREE_OK) {
@@ -1805,6 +1808,7 @@ static void rollback(atree_t *t, struct journalvec *j)
                 if (cur == UINT32_MAX) {
                     /* removed by the rewire: re-enter the slot vacated earlier */
                     struct atree__node *c = node_at(t, cid);
+                    assert(c->parents.len < c->parents.cap); /* its slot is intact */
                     (void)atree__u32vec_push(&t->mem, &c->parents, e->node);
                     child_pos_of_vec(&e->old_children)[k] = c->parents.len - 1;
                     t->edges++;
@@ -1936,7 +1940,11 @@ atree_status_t atree_insert_expr(atree_t *t, atree_id_t id, const atree_expr_t *
         uint64_t skipped = t->adjust_candidates_skipped;
         journal->len = 0;
         /* Rollback must not fail: size the cascade worklist up front. */
-        st = atree__u32vec_reserve(&t->mem, &t->worklist, t->nodes.len + expr_node_count(norm) + 1);
+        {
+            uint64_t need = (uint64_t)t->nodes.len + expr_node_count(norm) + 1;
+            st = need > UINT32_MAX ? ATREE_ERR_LIMIT
+                                   : atree__u32vec_reserve(&t->mem, &t->worklist, (uint32_t)need);
+        }
         if (st == ATREE_OK) {
             st = prehash(t, norm);
         }

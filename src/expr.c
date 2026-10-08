@@ -680,7 +680,6 @@ static void *arena_alloc(struct atree__arena *a, size_t size)
     size_t hdr = round_align(sizeof(struct arena_chunk));
     char *p;
     if (size == 0) {
-        size = 1;
         need = ARENA_ALIGN;
     }
     if (a->head == NULL || a->used + need > a->head->size) {

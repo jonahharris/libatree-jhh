@@ -168,6 +168,8 @@ ATREE_MAYBE_UNUSED static atree_expr_t *gen_leaf(struct gen *g)
     int64_t ints[GEN_MAX_LIST];
     const char *strs[GEN_MAX_LIST];
     uint32_t n;
+    atree_op_t op;
+    bool equal;
     uint32_t attr = gen_below(&g->rng, GEN_NATTRS);
     const char *name = GEN_DEFS[attr].name;
 
@@ -189,16 +191,22 @@ ATREE_MAYBE_UNUSED static atree_expr_t *gen_leaf(struct gen *g)
             n = gen_ints(g, ints, 1);
             return atree_expr_in_ints(t, name, gen_chance(&g->rng, 60), ints, n);
         }
-        return atree_expr_cmp_int(t, name, ops[gen_below(&g->rng, 6)], gen_int(g));
+        /* One draw per statement: two draws in one argument list would be
+         * made in an unspecified order and the stream would differ between
+         * compilers, so a failing seed could not be replayed elsewhere. */
+        op = ops[gen_below(&g->rng, 6)];
+        return atree_expr_cmp_int(t, name, op, gen_int(g));
     case GEN_F0:
-        return atree_expr_cmp_float(t, name, ops[gen_below(&g->rng, 6)], gen_float(g));
+        op = ops[gen_below(&g->rng, 6)];
+        return atree_expr_cmp_float(t, name, op, gen_float(g));
     case GEN_S0:
     case GEN_S1:
         if (gen_chance(&g->rng, 40)) {
             n = gen_strings(g, strs, 1);
             return atree_expr_in_strings(t, name, gen_chance(&g->rng, 60), strs, NULL, n);
         }
-        return atree_expr_eq_string(t, name, gen_chance(&g->rng, 60), gen_string(g), SIZE_MAX);
+        equal = gen_chance(&g->rng, 60);
+        return atree_expr_eq_string(t, name, equal, gen_string(g), SIZE_MAX);
     case GEN_IL0:
         n = gen_ints(g, ints, 1);
         return atree_expr_list_ints(t, name, lops[gen_below(&g->rng, 3)], ints, n);
@@ -229,11 +237,12 @@ ATREE_MAYBE_UNUSED static atree_expr_t *gen_expr_depth(struct gen *g, uint32_t d
     if (roll < 42) {
         return atree_expr_not(gen_expr_depth(g, depth + 1));
     }
-    if (roll < 47) {
-        return atree_expr_xor(gen_expr_depth(g, depth + 1), gen_expr_depth(g, depth + 1));
-    }
     if (roll < 52) {
-        return atree_expr_xnor(gen_expr_depth(g, depth + 1), gen_expr_depth(g, depth + 1));
+        /* left then right: two draws in one argument list would be made in
+         * an unspecified order and the stream would differ between compilers */
+        atree_expr_t *left = gen_expr_depth(g, depth + 1);
+        atree_expr_t *right = gen_expr_depth(g, depth + 1);
+        return roll < 47 ? atree_expr_xor(left, right) : atree_expr_xnor(left, right);
     }
     n = 2 + gen_below(&g->rng, 3);
     for (i = 0; i < n; i++) {

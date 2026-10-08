@@ -197,11 +197,14 @@ int main(int argc, char **argv)
             }
             t1 = bench_now_ns();
             if (nevents == lat_cap) {
+                uint64_t *grown;
                 lat_cap = lat_cap ? lat_cap * 2 : 1024;
-                lat = (uint64_t *)realloc(lat, lat_cap * sizeof *lat);
-                if (lat == NULL) {
+                grown = (uint64_t *)realloc(lat, lat_cap * sizeof *lat);
+                if (grown == NULL) {
+                    free(lat);
                     return 2;
                 }
+                lat = grown;
             }
             lat[nevents++] = t1 - t0;
             atree_report_stats(rep, &rs);

@@ -66,17 +66,15 @@ static void fail_name(struct parser *p, atree_status_t st, size_t offset, size_t
 
 static void advance(struct parser *p)
 {
-    atree_error_t lex_err;
     atree_status_t st;
     if (p->st != ATREE_OK) {
         return;
     }
-    st = atree__lexer_next(&p->lx, &p->cur, &lex_err);
+    /* The lexer writes the caller's diagnostic directly (it accepts NULL);
+     * copying a local would carry the unwritten tail of its message. */
+    st = atree__lexer_next(&p->lx, &p->cur, p->err);
     if (st != ATREE_OK) {
         p->st = st;
-        if (p->err != NULL) {
-            *p->err = lex_err;
-        }
         p->cur.kind = ATREE_TOK_END;
     }
 }

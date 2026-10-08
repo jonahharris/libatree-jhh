@@ -119,8 +119,11 @@ static int run_with_flags(unsigned flags, uint64_t seed)
         atree_error_t err;
         live[nlive].expr = gen_expr(&g);
         live[nlive].id = next_id++;
-        if (live[nlive].expr == NULL ||
-            atree_insert_expr(g.tree, live[nlive].id, live[nlive].expr, &err) != ATREE_OK) {
+        if (live[nlive].expr == NULL) {
+            fprintf(stderr, "expression generation failed (out of memory)\n");
+            return 1;
+        }
+        if (atree_insert_expr(g.tree, live[nlive].id, live[nlive].expr, &err) != ATREE_OK) {
             fprintf(stderr, "insert failed: %s\n", err.message);
             return 1;
         }

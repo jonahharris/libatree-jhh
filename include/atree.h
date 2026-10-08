@@ -17,6 +17,9 @@
  *     never calls malloc() directly except inside atree_default_allocator().
  *   - Strings are length-delimited. Where a length parameter may be SIZE_MAX,
  *     the string must be NUL-terminated and strlen() is used.
+ *   - Float literals are read and printed with the C library's strtod and
+ *     snprintf, which honour LC_NUMERIC: the process must keep the "C"
+ *     locale's decimal point (the default) for the DSL to round-trip.
  *
  * Thread safety
  *   Functions taking `const atree_t *` are read paths and never write to tree

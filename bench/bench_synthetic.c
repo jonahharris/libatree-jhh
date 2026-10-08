@@ -234,6 +234,9 @@ struct counts {
 static uint32_t share_at(const struct params *p, uint32_t depth)
 {
     uint32_t i = depth > 0 ? depth - 1 : 0;
+    if (p->nshare == 0) {
+        return 0;
+    }
     if (i >= p->nshare) {
         i = p->nshare - 1;
     }
@@ -737,6 +740,10 @@ static int check_baseline(const char *path, const struct results *r)
     fseek(f, 0, SEEK_END);
     n = ftell(f);
     fseek(f, 0, SEEK_SET);
+    if (n < 0) {
+        fclose(f);
+        return 1;
+    }
     text = (char *)malloc((size_t)n + 1);
     if (text == NULL || fread(text, 1, (size_t)n, f) != (size_t)n) {
         fclose(f);
@@ -898,9 +905,13 @@ static int parse_args(int argc, char **argv, struct params *p)
         fprintf(stderr, "invalid parameters\n");
         return 1;
     }
+    if (p->pred_pool > (1u << 30)) {
+        fprintf(stderr, "predicate pool too large (max 2^30)\n");
+        return 1;
+    }
     if (p->pred_share > 0.0) {
         double pool = p->expressions * expected_predicates(p) / p->pred_share;
-        p->pred_pool = pool < 1.0 ? 1 : pool > 4e9 ? 4000000000u : (uint32_t)(pool + 0.5);
+        p->pred_pool = pool < 1.0 ? 1 : pool > 1073741824.0 ? 1073741824u : (uint32_t)(pool + 0.5);
     }
     return 0;
 }

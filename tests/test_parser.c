@@ -426,6 +426,8 @@ TEST(parse_errors_with_positions)
     bad += expect_error(t, "price > 9007199254740993", ATREE_ERR_INVALID_LITERAL, 0);
     bad += expect_error(t, "exchange_id = 99999999999999999999", ATREE_ERR_INVALID_LITERAL, 14);
     bad += expect_error(t, "price = 1e999", ATREE_ERR_INVALID_LITERAL, 8);
+    bad += expect_error(t, "price = 1e-400", ATREE_ERR_INVALID_LITERAL, 8); /* underflow */
+    bad += expect_error(t, "price = 0.000001e-400", ATREE_ERR_INVALID_LITERAL, 8);
     bad += expect_error(t, "country = 'abc", ATREE_ERR_SYNTAX, 10);
     bad += expect_error(t, "country = \"abc\\", ATREE_ERR_SYNTAX, 10);
     bad += expect_error(t, "private @ test", ATREE_ERR_SYNTAX, 8);

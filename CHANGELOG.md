@@ -39,6 +39,28 @@ All notable changes to this project are documented here. The format follows
   as memory, and an expression over it fails with `ATREE_ERR_LIMIT`.
 
 ### Fixed
+- A review for undefined and unspecified behaviour after the x86-64-only
+  server failure (two commands read an out-parameter in the argument list
+  that filled it). Library: the bitset size and the delete worklist size
+  are computed in 64-bit arithmetic so a node count near 2^32 cannot wrap
+  them, the parser hands the caller's diagnostic to the lexer instead of
+  copying a half-written local, a float literal that underflows is refused
+  (its value is implementation-defined), and the header states that the DSL
+  relies on the C locale's decimal point. Server: the internal `HTTP`
+  dispatch is reachable only on HTTP connections with the six arguments the
+  HTTP parser builds (a RESP client typing `HTTP` could make it read past
+  the argument array), and formatted channel names go through a clamped
+  `snprintf`. Shell: SIGPIPE is ignored (a notification to a vanished
+  client killed the server), `EINTR` is retried, errno survives `close` on
+  error paths, ports outside 1–65535 are rejected and descriptors beyond
+  `FD_SETSIZE` are refused. Tests: the random generator makes one PRNG
+  draw per statement so the same seed produces the same expressions on
+  every compiler (two draws in one argument list were ordered
+  differently by gcc and clang), the thread test no longer calls `memcpy`
+  or `memcmp` through a NULL match pointer when an event matches nothing,
+  and the differential test no longer prints an unset diagnostic when
+  generation fails. Benchmarks: an empty `--share` list, a failed `ftell`,
+  a predicate pool above 2^30 and a failed `realloc` are handled.
 - First run of the CI workflow on GitHub: the thread test's build-swap-retire
   sequence destroyed the old tree after a fixed grace period that a loaded
   runner outlasted (a reader was still searching it); it now waits until

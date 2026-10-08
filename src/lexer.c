@@ -5,6 +5,7 @@
  */
 #include "lexer.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -149,6 +150,24 @@ static atree_status_t lex_number(struct atree__lexer *lx, struct atree__token *t
             atree__error_set(err, ATREE_ERR_INVALID_LITERAL, start, tok->length,
                              "float literal is not a finite number");
             return ATREE_ERR_INVALID_LITERAL;
+        }
+        /* Underflow is implementation-defined (C99 7.20.1.3: zero or a
+         * denormal, ERANGE optional), so a literal that lands there would
+         * mean different thresholds on different C libraries; refuse it. A
+         * zero result from a mantissa with a nonzero digit is the same case. */
+        if (!isnormal(v)) {
+            bool nonzero_digit = false;
+            size_t k;
+            for (k = 0; k < tok->length && buf[k] != 'e' && buf[k] != 'E'; k++) {
+                if (buf[k] >= '1' && buf[k] <= '9') {
+                    nonzero_digit = true;
+                }
+            }
+            if (nonzero_digit) {
+                atree__error_set(err, ATREE_ERR_INVALID_LITERAL, start, tok->length,
+                                 "float literal is too small to represent");
+                return ATREE_ERR_INVALID_LITERAL;
+            }
         }
         tok->kind = ATREE_TOK_FLOAT;
         tok->f = v;

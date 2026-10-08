@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -72,6 +73,9 @@ static void wb_flush(struct wbuf *w)
     size_t off = 0;
     while (off < w->n) {
         ssize_t k = write(w->fd, w->b + off, w->n - off);
+        if (k < 0 && errno == EINTR) {
+            continue;
+        }
         if (k <= 0) {
             break; /* a closed peer; the caller notices on its next read */
         }
@@ -790,6 +794,15 @@ static int is_number(const char *s)
 }
 
 /* Listens on 127.0.0.1:PORT (spec all digits) or on a Unix socket at PATH. */
+/* Closes fd on a failure path without clobbering the errno being reported. */
+static int fail_close(int fd)
+{
+    int saved = errno;
+    close(fd);
+    errno = saved;
+    return -1;
+}
+
 static int open_listener(const char *spec)
 {
     int fd;
@@ -803,11 +816,16 @@ static int open_listener(const char *spec)
         (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
         memset(&sa, 0, sizeof sa);
         sa.sin_family = AF_INET;
-        sa.sin_port = htons((uint16_t)strtoul(spec, NULL, 10));
+        unsigned long portno = strtoul(spec, NULL, 10);
+        if (portno == 0 || portno > 65535) {
+            close(fd);
+            errno = EINVAL;
+            return -1;
+        }
+        sa.sin_port = htons((uint16_t)portno);
         sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-            close(fd);
-            return -1;
+            return fail_close(fd);
         }
     } else {
         struct sockaddr_un sa;
@@ -824,13 +842,11 @@ static int open_listener(const char *spec)
         strcpy(sa.sun_path, spec);
         (void)unlink(spec);
         if (bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-            close(fd);
-            return -1;
+            return fail_close(fd);
         }
     }
     if (listen(fd, 16) < 0) {
-        close(fd);
-        return -1;
+        return fail_close(fd);
     }
     return fd;
 }
@@ -852,8 +868,7 @@ static int open_connection(const char *host, const char *port)
         sa.sun_family = AF_UNIX;
         strcpy(sa.sun_path, host);
         if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-            close(fd);
-            return -1;
+            return fail_close(fd);
         }
         return fd;
     } else {
@@ -864,6 +879,7 @@ static int open_connection(const char *host, const char *port)
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         if (getaddrinfo(host, port, &hints, &res) != 0) {
+            errno = EHOSTUNREACH; /* getaddrinfo does not set errno */
             return -1;
         }
         fd = -1;
@@ -958,7 +974,8 @@ static int run_server(struct shell *sh, const char *spec)
         if (FD_ISSET(lfd, &rd)) {
             int fd = accept(lfd, NULL, NULL);
             if (fd >= 0) {
-                if (sh->nclients == MAX_CLIENTS) {
+                /* FD_SET on a descriptor >= FD_SETSIZE is undefined */
+                if (sh->nclients == MAX_CLIENTS || fd >= FD_SETSIZE) {
                     close(fd);
                 } else {
                     struct client *c = &sh->clients[sh->nclients];
@@ -994,6 +1011,9 @@ static int write_all(int fd, const char *p, size_t n)
 {
     while (n > 0) {
         ssize_t w = write(fd, p, n);
+        if (w < 0 && errno == EINTR) {
+            continue;
+        }
         if (w <= 0) {
             return -1;
         }
@@ -1011,6 +1031,11 @@ static int run_client(const char *host, const char *port)
     if (fd < 0) {
         fprintf(stderr, "atree_shell: cannot connect to %s%s%s: %s\n", host, port ? ":" : "",
                 port ? port : "", strerror(errno));
+        return 1;
+    }
+    if (fd >= FD_SETSIZE) { /* select() cannot watch it */
+        fprintf(stderr, "atree_shell: too many open descriptors\n");
+        close(fd);
         return 1;
     }
     buf = (char *)malloc(MAX_LINE);
@@ -1090,6 +1115,8 @@ int main(int argc, char **argv)
     const char *connect_port = NULL;
     int i;
     int rc;
+
+    signal(SIGPIPE, SIG_IGN); /* a NOTIFY to a vanished client must not kill the server */
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--listen") == 0 && i + 1 < argc) {

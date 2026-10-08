@@ -106,7 +106,7 @@ void atree_report_destroy(atree_report_t *r)
  * new words are zeroed; bits past nodes.len are never set. */
 static atree_status_t ensure_capacity(atree_report_t *r, const atree_t *t)
 {
-    uint32_t need = (t->nodes.len + 63) / 64;
+    uint32_t need = (uint32_t)(((uint64_t)t->nodes.len + 63) / 64); /* no wrap near 2^32 */
     uint32_t nq = t->max_level + 1;
     if (nq < 2) {
         nq = 2;

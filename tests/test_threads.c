@@ -86,8 +86,10 @@ static int build_shared(struct shared *sh, const atree_config_t *cfg, uint64_t s
         if (sh->expected[i] == NULL) {
             return 1;
         }
-        memcpy(sh->expected[i], atree_report_matches(rep),
-               sh->expected_count[i] * sizeof(atree_id_t));
+        if (sh->expected_count[i] > 0) { /* matches may be NULL when empty */
+            memcpy(sh->expected[i], atree_report_matches(rep),
+                   sh->expected_count[i] * sizeof(atree_id_t));
+        }
         atree_report_destroy(rep);
     }
     test_mutex_init(&sh->mu);
@@ -129,8 +131,9 @@ static void *reader_exact(void *arg)
             }
             r->searches++;
             if (atree_report_count(rep) != sh->expected_count[e] ||
-                memcmp(atree_report_matches(rep), sh->expected[e],
-                       sh->expected_count[e] * sizeof(atree_id_t)) != 0) {
+                (sh->expected_count[e] > 0 &&
+                 memcmp(atree_report_matches(rep), sh->expected[e],
+                        sh->expected_count[e] * sizeof(atree_id_t)) != 0)) {
                 r->mismatches++;
             }
         }

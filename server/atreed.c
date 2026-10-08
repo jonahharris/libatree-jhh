@@ -139,6 +139,22 @@ static void reply_ok(struct conn *conn, const char *msg)
 
 static void reply_err(struct conn *conn, const char *fmt, ...) PRINTF_LIKE(2, 3);
 
+/* snprintf as a length: negative becomes 0 and the result is clamped to the
+ * buffer, so a formatted name can never be read past its array. */
+static size_t sfmt(char *buf, size_t cap, const char *fmt, ...) PRINTF_LIKE(3, 4);
+static size_t sfmt(char *buf, size_t cap, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, cap, fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        return 0;
+    }
+    return (size_t)n >= cap ? cap - 1 : (size_t)n;
+}
+
 static void reply_err(struct conn *conn, const char *fmt, ...)
 {
     char msg[1024];
@@ -464,7 +480,7 @@ static void catch_all_payload(struct buf *b, uint64_t id, const char *payload, s
 {
     char head[24];
     buf_append(b, "{\"id\":", 6);
-    buf_append(b, head, (size_t)snprintf(head, sizeof head, "%" PRIu64, id));
+    buf_append(b, head, sfmt(head, sizeof head, "%" PRIu64, id));
     buf_append(b, ",\"event\":", 9);
     append_payload_json(b, payload, len);
     buf_append_byte(b, '}');
@@ -474,8 +490,8 @@ static void push_resp(struct conn *conn, uint64_t sub_id, uint64_t id, const cha
                       size_t len)
 {
     char chan[48];
-    size_t n = sub_id == SUB_ALL ? (size_t)snprintf(chan, sizeof chan, "atree:*")
-                                 : (size_t)snprintf(chan, sizeof chan, "atree:%" PRIu64, sub_id);
+    size_t n = sub_id == SUB_ALL ? sfmt(chan, sizeof chan, "atree:*")
+                                 : sfmt(chan, sizeof chan, "atree:%" PRIu64, sub_id);
     conn_write_array(conn, 3);
     conn_write_bulk(conn, "message", 7);
     conn_write_bulk(conn, chan, n);
@@ -494,7 +510,7 @@ static void push_sse(struct conn *conn, uint64_t id, const char *payload, size_t
     struct buf b = {0};
     char head[64];
     buf_append(&b, "event: match\ndata: {\"id\":", 25);
-    buf_append(&b, head, (size_t)snprintf(head, sizeof head, "%" PRIu64, id));
+    buf_append(&b, head, sfmt(head, sizeof head, "%" PRIu64, id));
     buf_append(&b, ",\"event\":", 9);
     append_payload_json(&b, payload, len);
     buf_append(&b, "}\n\n", 3);
@@ -508,7 +524,7 @@ static void push_pg_row(struct conn *conn, uint64_t id, const char *payload, siz
     const char *cols[2];
     size_t lens[2];
     cols[0] = idtext;
-    lens[0] = (size_t)snprintf(idtext, sizeof idtext, "%" PRIu64, id);
+    lens[0] = sfmt(idtext, sizeof idtext, "%" PRIu64, id);
     cols[1] = payload;
     lens[1] = len;
     pg_write_row_data(conn, cols, lens, 2);
@@ -520,8 +536,8 @@ static void push_pg_notify(struct conn *conn, uint64_t sub_id, uint64_t id, cons
 {
     char chan[48];
     size_t chanlen = sub_id == SUB_ALL
-        ? (size_t)snprintf(chan, sizeof chan, "atree_all")
-        : (size_t)snprintf(chan, sizeof chan, "atree_%" PRIu64, sub_id);
+        ? sfmt(chan, sizeof chan, "atree_all")
+        : sfmt(chan, sizeof chan, "atree_%" PRIu64, sub_id);
     struct buf b = {0};
     size_t size;
     char *msg;
@@ -828,7 +844,7 @@ reply:
             char idtext[24];
             const char *cols[1] = {idtext};
             size_t lens[1];
-            lens[0] = (size_t)snprintf(idtext, sizeof idtext, "%" PRIu64, m[i]);
+            lens[0] = sfmt(idtext, sizeof idtext, "%" PRIu64, m[i]);
             pg_write_row_data(conn, cols, lens, 1);
         }
         pg_write_completef(conn, "EVENT %zu", n);
@@ -848,13 +864,13 @@ static void stats_text(struct buf *b, const char *eol)
     atree_stats_t st;
     char line[128];
     if (S.tree == NULL) {
-        buf_append(b, line, (size_t)snprintf(line, sizeof line, "tree:none%s", eol));
+        buf_append(b, line, sfmt(line, sizeof line, "tree:none%s", eol));
         return;
     }
     atree_stats(S.tree, &st);
 #define LINE(k, v)                                                                                 \
     buf_append(b, line,                                                                            \
-               (size_t)snprintf(line, sizeof line, "%s:%" PRIu64 "%s", k, (uint64_t)(v), eol))
+               sfmt(line, sizeof line, "%s:%" PRIu64 "%s", k, (uint64_t)(v), eol))
     LINE("subscriptions", st.subscriptions);
     LINE("nodes", st.nodes);
     LINE("leaves", st.leaves);
@@ -882,23 +898,23 @@ static void stats_json(struct buf *b)
         atree_stats(S.tree, &st);
     }
     buf_append(b, line,
-               (size_t)snprintf(line, sizeof line,
+               sfmt(line, sizeof line,
                                 "{\"subscriptions\":%" PRIu64 ",\"nodes\":%" PRIu64
                                 ",\"leaves\":%" PRIu64 ",\"edges\":%" PRIu64 ",",
                                 st.subscriptions, st.nodes, st.leaves, st.edges));
     buf_append(b, line,
-               (size_t)snprintf(line, sizeof line,
+               sfmt(line, sizeof line,
                                 "\"max_level\":%" PRIu64 ",\"indexed_leaves\":%" PRIu64
                                 ",\"scanned_leaves\":%" PRIu64 ",",
                                 st.max_level, st.indexed_leaves, st.scanned_leaves));
     buf_append(b, line,
-               (size_t)snprintf(line, sizeof line,
+               sfmt(line, sizeof line,
                                 "\"reorganized\":%" PRIu64 ",\"self_adjusted\":%" PRIu64
                                 ",\"strings\":%" PRIu64 ",",
                                 st.reorganized, st.self_adjusted, st.strings));
     buf_append(
         b, line,
-        (size_t)snprintf(line, sizeof line,
+        sfmt(line, sizeof line,
                          "\"bytes_allocated\":%" PRIu64 ",\"bytes_peak\":%" PRIu64
                          ",\"events\":%" PRIu64 ",\"deliveries\":%" PRIu64 ",\"subscribers\":%zu}",
                          st.bytes_allocated, st.bytes_peak, S.events, S.deliveries, S.nsubs));
@@ -1084,7 +1100,7 @@ static void cmd_http(struct conn *conn, struct args *args)
         buf_clear(&b);
     } else if (get && argeq_bytes(path, plen, "/count")) {
         char text[64];
-        size_t n = (size_t)snprintf(text, sizeof text, "{\"count\":%zu}\n",
+        size_t n = sfmt(text, sizeof text, "{\"count\":%zu}\n",
                                     S.tree != NULL ? atree_count(S.tree) : 0);
         http_json(conn, 200, "OK", text, n);
     } else if (get && argeq_bytes(path, plen, "/validate")) {
@@ -1124,7 +1140,7 @@ static void cmd_http(struct conn *conn, struct args *args)
         }
         {
             char text[64];
-            size_t n = (size_t)snprintf(text, sizeof text, "{\"defined\":%zu}\n", added);
+            size_t n = sfmt(text, sizeof text, "{\"defined\":%zu}\n", added);
             http_json(conn, 200, "OK", text, n);
         }
     } else if (post && argeq_bytes(path, plen, "/create")) {
@@ -1171,16 +1187,16 @@ static void cmd_http(struct conn *conn, struct args *args)
             atree_report_stats_t rs;
             atree_report_stats(S.rep, &rs);
             buf_append(&b, head,
-                       (size_t)snprintf(head, sizeof head, "{\"count\":%zu,\"matches\":[", n));
+                       sfmt(head, sizeof head, "{\"count\":%zu,\"matches\":[", n));
             for (i = 0; i < n; i++) {
                 buf_append(&b, head,
-                           (size_t)snprintf(head, sizeof head, "%s%" PRIu64, i ? "," : "", m[i]));
+                           sfmt(head, sizeof head, "%s%" PRIu64, i ? "," : "", m[i]));
             }
             buf_append(
                 &b, head,
-                (size_t)snprintf(head, sizeof head, "],\"time_us\":%.1f,", (double)ns / 1000.0));
+                sfmt(head, sizeof head, "],\"time_us\":%.1f,", (double)ns / 1000.0));
             buf_append(&b, head,
-                       (size_t)snprintf(head, sizeof head,
+                       sfmt(head, sizeof head,
                                         "\"nodes_visited\":%" PRIu64
                                         ",\"predicates_evaluated\":%" PRIu64 "}\n",
                                         rs.nodes_visited, rs.predicates_evaluated));
@@ -1199,7 +1215,9 @@ void evcommand(struct conn *conn, struct args *args)
     if (args_count(args) == 0) {
         return;
     }
-    if (arg_is(args, 0, "HTTP")) {
+    if (conn_proto(conn) == PROTO_HTTP && args_count(args) == 6 && arg_is(args, 0, "HTTP")) {
+        /* only http.c builds this six-argument form; a RESP client typing
+         * HTTP must not reach cmd_http's unchecked args_at calls */
         cmd_http(conn, args);
     } else if (arg_is(args, 0, "PING")) {
         reply_ok(conn, "PONG");

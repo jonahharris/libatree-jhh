@@ -171,13 +171,12 @@ static int parse_number(struct jp *j, struct json_value *v)
         if (end == tmp || *end != '\0') {
             return -1;
         }
-        if (errno == ERANGE) {
-            is_float = true; /* out of int64 range: carry it as a float */
-        } else {
+        if (errno != ERANGE) {
             v->kind = JSON_INT;
             v->i = ll;
             return 0;
         }
+        /* out of int64 range: carry it as a float */
     }
     errno = 0;
     v->f = strtod(tmp, &end);
