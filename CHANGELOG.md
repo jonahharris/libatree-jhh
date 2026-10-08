@@ -224,6 +224,15 @@ All notable changes to this project are documented here. The format follows
   `bench/rust_compare` compares the Rust `a-tree` crate on identical files;
   `docs/COMPARISON.md` records the results. Baseline regenerated for the
   new edge layout.
+- `bench/betree_compare` runs the reference be-tree (`reference/be-tree`,
+  built out of tree, its sources untouched) on the same files, and
+  `bench_synthetic --betree-compatible` writes the Rust dialect without
+  `not`, because be-tree reads a negated predicate on an undefined
+  attribute as true where the paper and libatree read it as false (eight
+  times the matches on the same 20 000 expressions). On the negation-free
+  data all three implementations return identical matches;
+  `docs/COMPARISON.md` has the three-way table at 20 000, 100 000 and
+  1 000 000 expressions.
 
 ## [0.1.0] - 2026-10-06
 

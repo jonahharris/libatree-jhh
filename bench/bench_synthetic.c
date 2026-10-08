@@ -34,6 +34,9 @@
  *     --cap N           max_adjust_candidates (reorganize/self-adjust scan bound)
  *     --dump PREFIX     also write PREFIX.defs/.exprs/.events (bench_file format)
  *     --rust-compatible dialect the Rust a-tree crate accepts (no xor/xnor/all of)
+ *     --betree-compatible that dialect without `not`: be-tree reads a negated
+ *                       predicate on an undefined attribute as true, the paper
+ *                       (and libatree) as false, so matches agree only without it
  *     --json            machine-readable output
  *     --check FILE      compare deterministic counts with a baseline JSON
  *                       (exit 1 on a regression of more than 5%)
@@ -186,6 +189,7 @@ struct params {
     uint32_t cap;        /* max_adjust_candidates (0 = library default) */
     int rust_compatible; /* avoid xor/xnor and `all of` (unsupported or different in the Rust crate)
                           */
+    int no_not;          /* and no `not` (be-tree negates undefined to true) */
 };
 
 static atree_type_t dim_type(uint32_t d)
@@ -249,7 +253,9 @@ static uint32_t share_at(const struct params *p, uint32_t depth)
  * expectation, so the estimate holds for any --share. */
 static double expected_predicates(const struct params *p)
 {
-    double children = p->rust_compatible ? 0.9 * p->fanout + 0.1 : 0.8 * p->fanout + 0.3;
+    double children = p->no_not ? (double)p->fanout
+        : p->rust_compatible    ? 0.9 * p->fanout + 0.1
+                                : 0.8 * p->fanout + 0.3;
     return pow(children, (double)(p->depth - 1));
 }
 
@@ -311,7 +317,7 @@ static void gen_predicate_text(struct gen *g, struct buf *b)
         }
         break;
     case ATREE_TYPE_BOOL:
-        if (roll < 50) {
+        if (roll < 50 && !g->p->no_not) {
             b->len -= strlen(name);
             b->p[b->len] = '\0';
             buf_add(b, "not ");
@@ -469,6 +475,9 @@ static struct counts gen_expr(struct gen *g, struct buf *b, uint32_t depth)
     roll = below(100);
     if (g->p->rust_compatible && roll >= 90) {
         roll = roll < 95 ? 0 : 50; /* xor -> and, xnor -> or */
+    }
+    if (g->p->no_not && roll >= 80 && roll < 90) {
+        roll = roll < 85 ? 0 : 50; /* not -> and, or */
     }
     if (roll < 40 || roll < 80) {
         const char *op = roll < 40 ? " and " : " or ";
@@ -795,6 +804,7 @@ static int parse_args(int argc, char **argv, struct params *p)
     p->check = NULL;
     p->dump = NULL;
     p->rust_compatible = 0;
+    p->no_not = 0;
     p->cap = 0;
     p->pred_pool = 0;
     for (i = 1; i < argc; i++) {
@@ -884,6 +894,9 @@ static int parse_args(int argc, char **argv, struct params *p)
             i++;
         } else if (strcmp(a, "--rust-compatible") == 0) {
             p->rust_compatible = 1;
+        } else if (strcmp(a, "--betree-compatible") == 0) {
+            p->rust_compatible = 1;
+            p->no_not = 1;
         } else if (strcmp(a, "--cap") == 0) {
             p->cap = (uint32_t)strtoul(v, NULL, 10);
             i++;

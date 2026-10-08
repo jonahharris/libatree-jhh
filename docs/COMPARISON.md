@@ -1,4 +1,4 @@
-# libatree vs the paper and the Rust `a-tree` crate
+# libatree vs the paper, the Rust `a-tree` crate and be-tree
 
 ## Method
 
@@ -10,65 +10,111 @@ are percentiles over the events of one run (2000 events at 100k
 expressions, 3000 at 1M). Numbers are from single runs, rounded; run-to-run
 differences under about 5% are noise and are never reported as changes.
 Construction time covers normalize and build with parsing timed separately,
-except in the same-data table, where `bench_file` times `atree_insert` on
-text for both implementations. "Allocated" is `bytes_allocated` from
-`atree_stats`, the live bytes requested from the allocator; "peak RSS" is
-the maximum resident set size that `/usr/bin/time -l` reports for the whole
-benchmark process, which includes the benchmark's own expression and event
-data. The paper's figures are read off its curves at 1M expressions (an
-error of perhaps 10%); its machine is the one its §6 names (2.2 GHz Intel,
-gcc 7.4 -O3). The Rust crate is 0.5.1 built with `--release`. Measured in
-October 2026 on the unreleased code after 0.1.0 (CHANGELOG.md). Everything
-is reproducible:
+except in the same-data table, where every implementation is timed on the
+expression text. "Allocated" is `bytes_allocated` from `atree_stats`, the
+live bytes requested from the allocator; "peak RSS" is the maximum resident
+set size that `/usr/bin/time -l` reports for the whole benchmark process,
+which includes the benchmark's own expression and event data. The paper's
+figures are read off its curves at 1M expressions (an error of perhaps
+10%); its machine is the one its §6 names (2.2 GHz Intel, gcc 7.4 -O3). The
+Rust crate is 0.5.1 built with `--release`. be-tree is the checkout under
+`reference/be-tree` (FrankBro/be-tree, the Boolean-expression tree after
+Whang et al., VLDB 2009), compiled out of tree with its own flags (`-O3
+-std=gnu11`) and driven through its public API by `bench/betree_compare`;
+its "heap after insert" is the process heap in use (`mstats`) after the
+inserts, before any event is built. Measured in October 2026 on the
+unreleased code after 0.1.0 (CHANGELOG.md). Everything is reproducible:
 
 ```sh
 make MODE=release bench
-# identical datasets in the dialect both implementations accept
-build-release/bench/bench_synthetic --rust-compatible --fanout 3 --share 30 --pred-share 0 --expressions 100000 --events 2000 --dump /tmp/s100k
-build-release/bench/bench_file /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events
-(cd bench/rust_compare && cargo run --release -- /tmp/s100k.defs /tmp/s100k.exprs /tmp/s100k.events)
+make -C bench/betree_compare
+# identical datasets in the dialect all three implementations accept
+build-release/bench/bench_synthetic --betree-compatible --fanout 3 --share 30 --pred-share 0 --expressions 100000 --events 2000 --dump /tmp/b100k
+build-release/bench/bench_file /tmp/b100k.defs /tmp/b100k.exprs /tmp/b100k.events
+bench/betree_compare/build/betree_compare /tmp/b100k.defs /tmp/b100k.exprs /tmp/b100k.events
+(cd bench/rust_compare && cargo run --release -- /tmp/b100k.defs /tmp/b100k.exprs /tmp/b100k.events)
+build-release/bench/bench_synthetic --paper --betree-compatible --dump /tmp/p1m    # the 1M column
 ```
 
-`bench/rust_compare` is optional tooling that builds the reference crate from
-`reference/a-tree`; it is not part of the library.
+`bench/rust_compare` and `bench/betree_compare` are optional tooling that
+build the reference implementations from `reference/`; they are not part of
+the library.
 
-## Same data, both implementations
+## Same data, three implementations
 
 A workload after the paper's generator: 1000 dimensions, cardinality 100,
 depth 3, 2–4 children per node, 20 attribute-value pairs per event, Zipf
 α 0.6, 30% subexpression reuse and no predicate pool (the flags in the
-block above; the generator's defaults reproduce the paper's sharing
-instead). Each dataset is generated once and fed to both implementations.
-Both return exactly the same number of matches on every dataset, which is a
-cross-implementation check of the semantics (the dialect avoids `all of`,
-whose meaning is reversed in the crate, and `xor`/`xnor`, which it lacks).
-Insert throughput here includes parsing for both.
+block above). The third column is the generator's `--paper` preset, the
+Table 3 parameters with the paper's sharing (fan-out 4, 54% subexpression
+reuse, a predicate pool sized for 18.35 uses per predicate), which is also
+the workload of the next section. Each dataset is generated once and fed to
+all three implementations, which return exactly the same number of matches
+on every dataset, a cross-implementation check of the semantics.
 
-| | 20 000 expressions, 500 events | 100 000 expressions, 2 000 events |
-|---|---|---|
-| total matches (both) | 287 998 | 6 257 519 |
-| search p50, Rust crate | 3 171 µs | 33 248 µs |
-| search p50, libatree | 52 µs | 344 µs |
-| search p99, Rust crate | 4 091 µs | 41 137 µs |
-| search p99, libatree | 106 µs | 655 µs |
-| insert, Rust crate | 60 000 /s | 17 450 /s |
-| insert, libatree | 188 500 /s | 205 800 /s |
-| peak RSS, Rust crate | 98 MB | 461 MB |
-| peak RSS, libatree | 20 MB | 80 MB |
-| libatree index | 83 270 nodes, 101 974 edges, 977 B/expr | 342 109 nodes, 503 407 edges, 706 B/expr |
+The dialect avoids `all of`, whose meaning is reversed in the crate,
+`xor`/`xnor`, which it lacks, and `not`, which be-tree evaluates as the
+plain complement of a predicate that is false on an undefined attribute:
+`not (d1 = 5)` is true for an event without `d1` in be-tree, and false in
+the paper's three-valued semantics and in libatree, which pushes the
+negation down to the leaf `d1 != 5`. With the generator's usual 10% `not`
+nodes be-tree returned 2 490 284 matches on the 20 000-expression dataset
+against 287 998 from the other two; without negation all three agree.
+Insert throughput includes parsing for all three.
 
-The timing rows were measured together, before the later search changes
-listed in CHANGELOG.md (radix sort, no OR re-evaluation, slot-array
-subscription lookup, phase-1 probing of defined attributes only), so they
-understate libatree; the size and RSS rows are from the current build.
+| | 20 000 expressions, 500 events | 100 000 expressions, 2 000 events | 1 000 000 expressions, 3 000 events (`--paper`) |
+|---|---|---|---|
+| total matches (all three) | 224 014 | 4 367 137 | 164 589 669 |
+| matches per event | 448 | 2 184 | 54 863 |
+| search p50, be-tree | 2 565 µs | 26 104 µs | 283 406 µs |
+| search p50, Rust crate | 3 519 µs | 33 645 µs | 480 989 µs |
+| search p50, libatree | 20.2 µs | 106.5 µs | 1 215 µs |
+| search p99, be-tree | 3 395 µs | 29 974 µs | 298 245 µs |
+| search p99, Rust crate | 4 091 µs | 37 759 µs | 497 945 µs |
+| search p99, libatree | 35.3 µs | 193.0 µs | 2 749 µs |
+| insert, be-tree | 11 200 /s | 9 550 /s | 1 910 /s |
+| insert, Rust crate | 54 500 /s | 16 500 /s | 1 760 /s |
+| insert, libatree | 199 400 /s | 182 300 /s | 104 400 /s |
+| heap after insert, be-tree | 66 MB (3 481 B/expr) | 324 MB (3 396 B/expr) | 5 302 MB (5 560 B/expr) |
+| allocated, libatree | 20 MB (1 006 B/expr) | 80 MB (796 B/expr) | 357 MB (357 B/expr) |
+| peak RSS, be-tree | 79 MB | 386 MB | 5 772 MB |
+| peak RSS, Rust crate | 87 MB | 470 MB | 3 862 MB |
+| peak RSS, libatree | 22 MB | 91 MB | 429 MB |
+| libatree index | 91 631 nodes, 117 188 edges | 371 580 nodes, 579 566 edges | 1 694 710 nodes, 4 599 411 edges |
+| subscriptions be-tree evaluates per event | 19 210 of 20 000 | 95 403 of 100 000 | 923 744 of 1 000 000 |
 
-The search gap (60× at 20k, 97× at 100k) grows with the number of
-expressions because the crate's phase 1 evaluates every distinct predicate
-for every event (`process_predicates` iterates `self.predicates`), so its
-match time is linear in the size of the index, whereas libatree's phase 1
-probes per-attribute indexes and its phase 2 visits only nodes reached from
-true leaves. At 100k expressions the crate evaluates about 213 000
-predicates per event; libatree evaluates about 2 200.
+At 100 000 expressions libatree searches 245× faster than be-tree and 316×
+faster than the crate; at 1M, 233× and 396×, in 15× less memory than
+be-tree. The paper's own A-Tree on its own 1M workload (next section:
+about 0.65 ms, 5.3 s, 300 MB) and the 1M column here are the same
+generator parameters, but the paper's events are far sparser (54 863
+matches per event here). libatree's 1M insert is 104 400/s here because
+`bench_file` times the parse as well; `bench_synthetic` on the same data
+inserts at 216 700/s with parsing timed separately.
+
+Why the two others are slow is different in each case. The crate's phase 1
+evaluates every distinct predicate for every event (`process_predicates`
+iterates `self.predicates`), so its match time is linear in the size of the
+index: about 213 000 predicates per event at 100k expressions, where
+libatree evaluates about 1 600. The be-tree partitions subscriptions by
+attribute (p-nodes) and value range (c-directories) and skips a partition
+only when the event lacks its attribute and the attribute was declared
+mandatory; an event here defines 20 of 1000 attributes, so every attribute
+must allow undefined, no partition is skipped, and the search evaluates 92
+to 96% of all subscriptions, each one short-circuited through an
+undefined-attribute bitmap when that decides it and memoized on shared
+subexpressions otherwise. Its own README warns that attributes which allow
+undefined cause many useless evaluations; the structure is built for dense
+events such as ad requests, where every targeting attribute is present and
+the value partitions prune. On such events (20 attributes, all defined in
+every event, 100 000 expressions, 26 553 matches per event, same generator
+otherwise) it evaluates 65 600 of the 100 000 subscriptions and searches in
+19.6 ms p50 (the crate 24.7 ms, libatree 1.28 ms with 38 100 nodes visited),
+with identical matches again (53 105 718 in total); it inserts at
+51 700/s there. Its insert slows with size because leaf nodes
+that overflow are split and their subscriptions moved, with arrays grown
+one element at a time: 523 s for 1M expressions, of which 367 s is the tree
+insertion after parsing.
 
 On the crate's own tiny dataset (`benches/data/search.json`, 9 expressions,
 2 events) its Criterion benchmark reports 17.8 µs for both events, so about

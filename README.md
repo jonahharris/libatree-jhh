@@ -353,11 +353,16 @@ self-adjust disabled, parsing excluded; an insert looks each subexpression
 up before building it, so a repeated subexpression costs one probe. Deletes
 exceed 1 000 000/s.
 
-**Against the Rust `a-tree` crate**, on identical datasets in the dialect
-both accept, libatree returns exactly the same matches and searches 60×
-faster at 20 000 expressions and 97× faster at 100 000 (0.34 ms vs 33 ms
-p50) in a fifth of the memory, because the crate evaluates every predicate
-per event while libatree probes per-attribute indexes. **Against the
+**Against the Rust `a-tree` crate and the reference be-tree**, on identical
+datasets in the dialect all three accept, the three return exactly the same
+matches and libatree searches 245× faster than be-tree and 316× faster than
+the crate at 100 000 expressions (0.11 ms vs 26 ms vs 34 ms p50), and 233×
+and 396× faster at 1M on the paper's Table 3 workload (1.2 ms vs 283 ms vs
+481 ms), in a quarter of be-tree's and a fifth of the crate's memory: the
+crate evaluates every predicate per event, and be-tree cannot prune its
+partitions when an event defines 20 of 1000 attributes, while libatree
+probes per-attribute indexes. On dense events, where be-tree's partitions do
+prune, the gap is 15×. **Against the
 paper's own synthetic curves** (Figures 11–13 at 1M expressions with the
 same parameters and sharing: about 0.65 ms, 5.3 s construction, 300 MB)
 libatree constructs in 3.9 s (254 000 expressions/s, parsing timed
