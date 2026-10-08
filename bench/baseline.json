@@ -2,7 +2,7 @@
   "expressions": 20000, "events": 500, "dims": 1000, "cardinality": 100,
   "event_size": 20, "depth": 3, "fanout": 4, "alpha": 0.600, "seed": 1, "flags": 0,
   "nodes": 40887, "leaves": 19205, "edges": 90171, "max_level": 6,
-  "bytes_allocated": 11546174, "reorganized": 4861, "self_adjusted": 1435,
+  "bytes_allocated": 10062126, "reorganized": 4861, "self_adjusted": 1435,
   "total_matches": 289624, "total_nodes_visited": 304061, "total_predicates_evaluated": 190798, "total_predicates_matched": 180119, "total_and_woken": 76124,
   "predicate_instances": 233958, "predicate_distinct": 13351, "predicate_sharing": 17.52,
   "inner_instances": 86528, "inner_sharing": 3.99, "parse_per_sec": 333100,
